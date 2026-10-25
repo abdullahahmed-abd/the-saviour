@@ -1,6 +1,7 @@
 import React from 'react';
 import { Shield, Search, Smile, Sparkles, Download } from 'lucide-react';
 import Avatar from '../common/Avatar';
+import SaviourLogo from '../common/SaviourLogo';
 import { useAuth } from '../../context/AuthContext';
 import { useChat } from '../../context/ChatContext';
 
@@ -22,20 +23,7 @@ export default function Header({
     <header className="app-header">
       {/* Brand logo & active screen */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <div
-          style={{
-            width: '34px',
-            height: '34px',
-            borderRadius: '10px',
-            background: 'var(--accent-gradient)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 2px 10px var(--accent-glow)'
-          }}
-        >
-          <Shield size={19} color="#ffffff" />
-        </div>
+        <SaviourLogo variant="emblem" size={30} />
         <div>
           <h1 style={{ fontSize: '17px', fontWeight: 700, margin: 0, lineHeight: 1.1, color: 'var(--text-primary)' }}>
             The Saviour

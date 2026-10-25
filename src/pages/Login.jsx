@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Shield, Lock, Mail, ArrowRight, KeyRound, AlertCircle, Info, Sparkles } from 'lucide-react';
+import SaviourLogo from '../components/common/SaviourLogo';
 import { useAuth } from '../context/AuthContext';
 import { resetPassword } from '../services/auth';
 
@@ -66,20 +67,7 @@ export default function Login() {
         }}
       >
         {/* Sanctuary Brand Glyph */}
-        <div
-          style={{
-            width: '64px',
-            height: '64px',
-            borderRadius: '20px',
-            background: 'var(--accent-gradient)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 8px 25px var(--accent-glow)'
-          }}
-        >
-          <Shield size={34} color="#ffffff" />
-        </div>
+        <SaviourLogo size={58} variant="emblem" />
 
         {/* Title */}
         <div style={{ textAlign: 'center' }}>

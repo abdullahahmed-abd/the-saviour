@@ -11,6 +11,8 @@ import Statistics from './pages/Statistics';
 import Memories from './pages/Memories';
 import Settings from './pages/Settings';
 import MoodModal from './components/mood/MoodModal';
+import StartupScreen from './components/startup/StartupScreen';
+import SaviourLogo from './components/common/SaviourLogo';
 import { getLatestMoods } from './services/moods';
 import { Shield, WifiOff } from 'lucide-react';
 
@@ -97,20 +99,8 @@ function AppContent() {
           gap: '16px'
         }}
       >
-        <div
-          style={{
-            width: '64px',
-            height: '64px',
-            borderRadius: '20px',
-            background: 'var(--accent-gradient)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 8px 30px var(--accent-glow)',
-            animation: 'pulseGlow 2s infinite ease-in-out'
-          }}
-        >
-          <Shield size={34} color="#ffffff" />
+        <div style={{ animation: 'pulseGlow 2.5s infinite ease-in-out' }}>
+          <SaviourLogo size={58} variant="emblem" />
         </div>
         <div style={{ textAlign: 'center' }}>
           <h2 style={{ fontSize: '20px', color: 'var(--text-primary)', margin: 0 }}>The Saviour</h2>
@@ -204,8 +194,13 @@ function AppContent() {
 }
 
 export default function App() {
+  const [startupDismissed, setStartupDismissed] = useState(false);
+
   return (
     <AuthProvider>
+      {!startupDismissed && (
+        <StartupScreen onDismiss={() => setStartupDismissed(true)} />
+      )}
       <AppContent />
     </AuthProvider>
   );
