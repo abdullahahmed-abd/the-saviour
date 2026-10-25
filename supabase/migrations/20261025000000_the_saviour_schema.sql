@@ -621,6 +621,15 @@ CREATE POLICY "Users can delete their own chat photos"
 -- ==============================================================================
 -- 17. SUPABASE REALTIME CONFIGURATION
 -- ==============================================================================
+-- Set REPLICA IDENTITY to FULL for tables with Row Level Security (RLS) enabled
+-- This ensures all column values are available during real-time replication and policy checks
+ALTER TABLE public.messages REPLICA IDENTITY FULL;
+ALTER TABLE public.message_reactions REPLICA IDENTITY FULL;
+ALTER TABLE public.message_reads REPLICA IDENTITY FULL;
+ALTER TABLE public.moods REPLICA IDENTITY FULL;
+ALTER TABLE public.games REPLICA IDENTITY FULL;
+ALTER TABLE public.game_answers REPLICA IDENTITY FULL;
+
 -- Enable Realtime publication for tables requiring live communication
 DO $$
 BEGIN

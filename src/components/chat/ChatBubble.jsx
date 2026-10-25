@@ -15,6 +15,7 @@ export default function ChatBubble({
   onDelete,
   onOpenImage,
   partnerReadMessageId,
+  partnerReadAt,
   currentUserId
 }) {
   const [showMenu, setShowMenu] = useState(false);
@@ -27,8 +28,12 @@ export default function ChatBubble({
   const isSticker = message.type === 'sticker';
   const metadata = message.metadata || {};
 
-  // Read status: If sender's message, check if partner's last read id is >= this message
-  const isReadByPartner = isSender && partnerReadMessageId && message.id <= partnerReadMessageId;
+  // Read status: If sender's message, check if partner's last read id or timestamp covers this message
+  const isReadByPartner = isSender && (
+    message.status === 'read' ||
+    (partnerReadMessageId && message.id === partnerReadMessageId) ||
+    (partnerReadAt && new Date(message.created_at) <= new Date(partnerReadAt))
+  );
 
   const handleCopy = () => {
     if (message.content) {

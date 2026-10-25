@@ -174,6 +174,7 @@ export default function Chat({ isSearching, onToggleSearch }) {
                   onDelete={deleteMsg}
                   onOpenImage={setLightboxImageUrl}
                   partnerReadMessageId={partnerReadMsgId}
+                  partnerReadAt={partnerRead?.last_read_at}
                   currentUserId={user?.id}
                 />
               </React.Fragment>

@@ -17,7 +17,7 @@ import { playSendChime, playReceiveChime } from '../utils/sound';
 const ChatContext = createContext(null);
 
 export function ChatProvider({ children }) {
-  const { user, profile, sanctuaryChat, isAuthorized } = useAuth();
+  const { user, profile, partnerProfile, sanctuaryChat, isAuthorized } = useAuth();
   const [messages, setMessages] = useState([]);
   const [reactions, setReactions] = useState({});
   const [readStates, setReadStates] = useState([]);
@@ -32,6 +32,11 @@ export function ChatProvider({ children }) {
   const typingTimeoutRef = useRef(null);
 
   const chatId = sanctuaryChat?.id || '00000000-0000-0000-0000-000000000001';
+
+  // Helper to ensure messages are strictly sorted chronologically (oldest at top, newest at bottom)
+  const sortChronologically = (list) => {
+    return [...list].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  };
 
   // 1. Initial Load of Messages & Reactions
   useEffect(() => {
@@ -49,7 +54,7 @@ export function ChatProvider({ children }) {
         const msgs = await fetchMessages(chatId, 50);
         if (!isMounted) return;
 
-        setMessages(msgs);
+        setMessages(sortChronologically(msgs));
         if (msgs.length < 50) {
           setHasMoreMessages(false);
         }
@@ -84,9 +89,9 @@ export function ChatProvider({ children }) {
 
   // 2. Realtime Subscriptions (Postgres changes & Presence)
   useEffect(() => {
-    if (!user || !isAuthorized) return;
+    if (!user || !isAuthorized || !chatId) return;
 
-    // Join channel
+    // Join channel for the sanctuary chat room
     const channel = supabase.channel(`sanctuary_${chatId}`, {
       config: {
         presence: { key: user.id }
@@ -95,31 +100,69 @@ export function ChatProvider({ children }) {
 
     channelRef.current = channel;
 
-    // Listen to message inserts & updates
+    // Listen to real-time message inserts
     channel
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
-        async (payload) => {
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        (payload) => {
           const newMsg = payload.new;
+          if (!newMsg || !newMsg.id) return;
+          // Filter to the current sanctuary room
+          if (newMsg.chat_id && newMsg.chat_id !== chatId) return;
 
-          // Check if sender profile is present; if not, query it
-          if (!newMsg.profiles && newMsg.sender_id) {
-            const { data: prof } = await supabase
-              .from('profiles')
-              .select('id, display_name, avatar_url')
-              .eq('id', newMsg.sender_id)
-              .single();
-            newMsg.profiles = prof;
-          }
+          // Attach sender profile immediately from auth context without network delay
+          const senderProfile = (newMsg.sender_id === user?.id)
+            ? profile
+            : (partnerProfile && partnerProfile.id === newMsg.sender_id ? partnerProfile : null);
 
-          setMessages(prev => {
-            // Avoid duplicate optimistic insert
-            const exists = prev.some(m => m.id === newMsg.id);
-            if (exists) {
-              return prev.map(m => m.id === newMsg.id ? newMsg : m);
+          newMsg.profiles = newMsg.profiles || senderProfile || {
+            id: newMsg.sender_id,
+            display_name: newMsg.sender_id === user?.id ? 'You' : 'Partner',
+            avatar_url: ''
+          };
+
+          setMessages((prev) => {
+            // 1. Check if the message is already present by exact database message ID
+            const existingIndex = prev.findIndex(m => m.id === newMsg.id);
+            if (existingIndex !== -1) {
+              const updated = [...prev];
+              updated[existingIndex] = {
+                ...updated[existingIndex],
+                ...newMsg,
+                profiles: newMsg.profiles || updated[existingIndex].profiles,
+                status: 'sent'
+              };
+              return updated;
             }
-            return [...prev, newMsg];
+
+            // 2. Check if this resolves an optimistic message (by client temp ID or content matching)
+            const clientTempId = newMsg.metadata?.client_temp_id;
+            const tempIndex = prev.findIndex(m => {
+              if (clientTempId && (m.id === clientTempId || m.metadata?.client_temp_id === clientTempId)) {
+                return true;
+              }
+              return (
+                m.id?.toString().startsWith('temp_') &&
+                m.sender_id === newMsg.sender_id &&
+                m.content === newMsg.content &&
+                m.type === newMsg.type
+              );
+            });
+
+            if (tempIndex !== -1) {
+              const updated = [...prev];
+              updated[tempIndex] = {
+                ...updated[tempIndex],
+                ...newMsg,
+                profiles: newMsg.profiles || updated[tempIndex].profiles,
+                status: 'sent'
+              };
+              return sortChronologically(updated);
+            }
+
+            // 3. Otherwise, append new message and sort chronologically
+            return sortChronologically([...prev, newMsg]);
           });
 
           // Play sound chime if received from partner
@@ -130,28 +173,44 @@ export function ChatProvider({ children }) {
           }
         }
       )
+      // Listen to real-time message updates (e.g. edits, soft deletes)
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
+        { event: 'UPDATE', schema: 'public', table: 'messages' },
         (payload) => {
           const updated = payload.new;
-          setMessages(prev => prev.map(m => m.id === updated.id ? { ...m, ...updated } : m));
+          if (!updated || !updated.id) return;
+          if (updated.chat_id && updated.chat_id !== chatId) return;
+
+          setMessages(prev => prev.map(m => {
+            if (m.id === updated.id) {
+              return {
+                ...m,
+                ...updated,
+                profiles: updated.profiles || m.profiles
+              };
+            }
+            return m;
+          }));
         }
       )
+      // Listen to real-time message deletes
       .on(
         'postgres_changes',
-        { event: 'DELETE', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
+        { event: 'DELETE', schema: 'public', table: 'messages' },
         (payload) => {
-          const deletedId = payload.old.id;
+          const deletedId = payload.old?.id;
+          if (!deletedId) return;
           setMessages(prev => prev.filter(m => m.id !== deletedId));
         }
       )
-      // Reactions realtime
+      // Reactions realtime (INSERT)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'message_reactions' },
         (payload) => {
           const rx = payload.new;
+          if (!rx || !rx.id) return;
           setReactions(prev => {
             const list = prev[rx.message_id] || [];
             if (list.some(r => r.id === rx.id)) return prev;
@@ -159,11 +218,13 @@ export function ChatProvider({ children }) {
           });
         }
       )
+      // Reactions realtime (DELETE)
       .on(
         'postgres_changes',
         { event: 'DELETE', schema: 'public', table: 'message_reactions' },
         (payload) => {
           const oldRx = payload.old;
+          if (!oldRx || !oldRx.id) return;
           setReactions(prev => {
             const list = prev[oldRx.message_id] || [];
             return {
@@ -176,8 +237,9 @@ export function ChatProvider({ children }) {
       // Read state updates
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'message_reads', filter: `chat_id=eq.${chatId}` },
-        async () => {
+        { event: '*', schema: 'public', table: 'message_reads' },
+        async (payload) => {
+          if (payload.new?.chat_id && payload.new.chat_id !== chatId) return;
           const reads = await fetchChatReadStates(chatId);
           setReadStates(reads);
         }
@@ -210,19 +272,52 @@ export function ChatProvider({ children }) {
           setPartnerTyping(false);
         }
       })
-      .subscribe(async (status) => {
+      .subscribe((status, err) => {
         if (status === 'SUBSCRIBED') {
-          await channel.track({
+          channel.track({
             online_at: new Date().toISOString(),
             typing: false
-          });
+          }).catch(() => {});
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error('[Realtime] Subscription error on sanctuary channel:', err);
+        } else if (status === 'TIMED_OUT') {
+          console.warn('[Realtime] Subscription timed out on sanctuary channel');
         }
       });
 
     return () => {
-      supabase.removeChannel(channel);
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
     };
-  }, [user, isAuthorized, chatId]);
+  }, [user, isAuthorized, chatId, profile, partnerProfile]);
+
+  // Re-synchronize messages if network was disconnected and comes back online
+  useEffect(() => {
+    const handleReconnected = async () => {
+      if (!chatId || !user || !isAuthorized) return;
+      try {
+        const latest = await fetchMessages(chatId, 30);
+        if (latest.length > 0) {
+          setMessages(prev => {
+            const map = new Map();
+            // Retain pending optimistic messages
+            prev.filter(m => m.id?.toString().startsWith('temp_')).forEach(m => map.set(m.id, m));
+            // Keep existing confirmed messages
+            prev.forEach(m => map.set(m.id, m));
+            // Merge in latest messages from server
+            latest.forEach(m => map.set(m.id, { ...map.get(m.id), ...m }));
+            return sortChronologically(Array.from(map.values()));
+          });
+        }
+      } catch (e) {
+        console.warn('Re-sync on reconnect error:', e);
+      }
+    };
+
+    window.addEventListener('online', handleReconnected);
+    return () => window.removeEventListener('online', handleReconnected);
+  }, [chatId, user, isAuthorized]);
 
   // Broadcast typing status
   const broadcastTyping = useCallback((isTyping) => {
@@ -235,14 +330,14 @@ export function ChatProvider({ children }) {
     channelRef.current.track({
       online_at: new Date().toISOString(),
       typing: isTyping
-    });
+    }).catch(() => {});
 
     if (isTyping) {
       typingTimeoutRef.current = setTimeout(() => {
         channelRef.current?.track({
           online_at: new Date().toISOString(),
           typing: false
-        });
+        }).catch(() => {});
       }, 3000);
     }
   }, [user]);
@@ -258,7 +353,7 @@ export function ChatProvider({ children }) {
         setHasMoreMessages(false);
       }
       if (older.length > 0) {
-        setMessages(prev => [...older, ...prev]);
+        setMessages(prev => sortChronologically([...older, ...prev]));
         const olderRx = await fetchReactionsForMessages(older.map(m => m.id));
         setReactions(prev => ({ ...prev, ...olderRx }));
       }
@@ -271,21 +366,25 @@ export function ChatProvider({ children }) {
   const sendTextMessage = async (text, replyTo = null) => {
     if (!text || !text.trim() || !user) return;
 
-    const tempId = `temp_${Date.now()}`;
+    const trimmed = text.trim();
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const optimisticMsg = {
       id: tempId,
       chat_id: chatId,
       sender_id: user.id,
-      content: text.trim(),
+      content: trimmed,
       type: 'text',
-      metadata: replyTo ? { reply_to: replyTo } : {},
+      metadata: {
+        ...(replyTo ? { reply_to: replyTo } : {}),
+        client_temp_id: tempId
+      },
       is_deleted: false,
       status: 'sending',
       created_at: new Date().toISOString(),
       profiles: profile
     };
 
-    setMessages(prev => [...prev, optimisticMsg]);
+    setMessages(prev => sortChronologically([...prev, optimisticMsg]));
     playSendChime();
     broadcastTyping(false);
 
@@ -293,12 +392,22 @@ export function ChatProvider({ children }) {
       const sentMsg = await sendMessage({
         chatId,
         senderId: user.id,
-        content: text.trim(),
+        content: trimmed,
         type: 'text',
-        metadata: replyTo ? { reply_to: replyTo } : {}
+        metadata: {
+          ...(replyTo ? { reply_to: replyTo } : {}),
+          client_temp_id: tempId
+        }
       });
 
-      setMessages(prev => prev.map(m => m.id === tempId ? sentMsg : m));
+      setMessages(prev => {
+        // If the real message already arrived via Realtime, remove the optimistic temp message
+        if (prev.some(m => m.id === sentMsg.id)) {
+          return prev.filter(m => m.id !== tempId);
+        }
+        // Otherwise replace tempId with sentMsg
+        return sortChronologically(prev.map(m => m.id === tempId ? { ...sentMsg, profiles: sentMsg.profiles || profile } : m));
+      });
     } catch (err) {
       console.error('Send message failed:', err);
       setMessages(prev => prev.map(m => m.id === tempId ? { ...m, status: 'failed' } : m));
@@ -312,6 +421,27 @@ export function ChatProvider({ children }) {
     setUploadingPhoto(true);
     setUploadError(null);
 
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const localPreviewUrl = URL.createObjectURL(file);
+    const optimisticMsg = {
+      id: tempId,
+      chat_id: chatId,
+      sender_id: user.id,
+      content: caption || '',
+      type: 'image',
+      metadata: {
+        photo_path: '',
+        signed_url: localPreviewUrl,
+        client_temp_id: tempId
+      },
+      is_deleted: false,
+      status: 'sending',
+      created_at: new Date().toISOString(),
+      profiles: profile
+    };
+
+    setMessages(prev => sortChronologically([...prev, optimisticMsg]));
+
     try {
       // Upload to private bucket
       const { path, signedUrl } = await uploadChatPhoto(file, chatId, user.id);
@@ -323,15 +453,23 @@ export function ChatProvider({ children }) {
         type: 'image',
         metadata: {
           photo_path: path,
-          signed_url: signedUrl
+          signed_url: signedUrl,
+          client_temp_id: tempId
         }
       });
 
       playSendChime();
+      setMessages(prev => {
+        if (prev.some(m => m.id === msg.id)) {
+          return prev.filter(m => m.id !== tempId);
+        }
+        return sortChronologically(prev.map(m => m.id === tempId ? { ...msg, profiles: msg.profiles || profile } : m));
+      });
       return msg;
     } catch (err) {
       console.error('Photo message failed:', err);
       setUploadError(err.message || 'Failed to upload photo.');
+      setMessages(prev => prev.filter(m => m.id !== tempId));
       throw err;
     } finally {
       setUploadingPhoto(false);
@@ -341,24 +479,50 @@ export function ChatProvider({ children }) {
   // Send a virtual gift card message
   const sendGiftMessage = async (gift) => {
     if (!gift || !user) return;
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const giftMetadata = {
+      gift_id: gift.id,
+      title: gift.title,
+      emoji: gift.emoji,
+      message: gift.message,
+      color: gift.color,
+      client_temp_id: tempId
+    };
+    const optimisticMsg = {
+      id: tempId,
+      chat_id: chatId,
+      sender_id: user.id,
+      content: gift.title,
+      type: 'gift',
+      metadata: giftMetadata,
+      is_deleted: false,
+      status: 'sending',
+      created_at: new Date().toISOString(),
+      profiles: profile
+    };
+
+    setMessages(prev => sortChronologically([...prev, optimisticMsg]));
+    playSendChime();
+
     try {
       const msg = await sendMessage({
         chatId,
         senderId: user.id,
         content: gift.title,
         type: 'gift',
-        metadata: {
-          gift_id: gift.id,
-          title: gift.title,
-          emoji: gift.emoji,
-          message: gift.message,
-          color: gift.color
-        }
+        metadata: giftMetadata
       });
-      playSendChime();
+
+      setMessages(prev => {
+        if (prev.some(m => m.id === msg.id)) {
+          return prev.filter(m => m.id !== tempId);
+        }
+        return sortChronologically(prev.map(m => m.id === tempId ? { ...msg, profiles: msg.profiles || profile } : m));
+      });
       return msg;
     } catch (err) {
       console.error('Gift sending failed:', err);
+      setMessages(prev => prev.filter(m => m.id !== tempId));
       throw err;
     }
   };
@@ -366,22 +530,48 @@ export function ChatProvider({ children }) {
   // Send a built-in expressive sticker
   const sendStickerMessage = async (sticker) => {
     if (!sticker || !user) return;
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const stickerMetadata = {
+      sticker_id: sticker.id,
+      emoji: sticker.emoji,
+      label: sticker.label,
+      client_temp_id: tempId
+    };
+    const optimisticMsg = {
+      id: tempId,
+      chat_id: chatId,
+      sender_id: user.id,
+      content: sticker.label,
+      type: 'sticker',
+      metadata: stickerMetadata,
+      is_deleted: false,
+      status: 'sending',
+      created_at: new Date().toISOString(),
+      profiles: profile
+    };
+
+    setMessages(prev => sortChronologically([...prev, optimisticMsg]));
+    playSendChime();
+
     try {
       const msg = await sendMessage({
         chatId,
         senderId: user.id,
         content: sticker.label,
         type: 'sticker',
-        metadata: {
-          sticker_id: sticker.id,
-          emoji: sticker.emoji,
-          label: sticker.label
-        }
+        metadata: stickerMetadata
       });
-      playSendChime();
+
+      setMessages(prev => {
+        if (prev.some(m => m.id === msg.id)) {
+          return prev.filter(m => m.id !== tempId);
+        }
+        return sortChronologically(prev.map(m => m.id === tempId ? { ...msg, profiles: msg.profiles || profile } : m));
+      });
       return msg;
     } catch (err) {
       console.error('Sticker message failed:', err);
+      setMessages(prev => prev.filter(m => m.id !== tempId));
       throw err;
     }
   };
@@ -389,10 +579,12 @@ export function ChatProvider({ children }) {
   // Soft delete own message
   const deleteMsg = async (messageId) => {
     try {
-      await deleteMessage(messageId, false);
       setMessages(prev => prev.map(m => m.id === messageId ? { ...m, is_deleted: true, content: 'This message was deleted' } : m));
+      await deleteMessage(messageId, false);
     } catch (err) {
       console.error('Delete message error:', err);
+      const msgs = await fetchMessages(chatId, 50);
+      setMessages(sortChronologically(msgs));
       throw err;
     }
   };
@@ -405,17 +597,24 @@ export function ChatProvider({ children }) {
 
     try {
       if (existing) {
-        await removeReaction(messageId, user.id, emoji);
         setReactions(prev => ({
           ...prev,
           [messageId]: (prev[messageId] || []).filter(r => r.id !== existing.id)
         }));
+        await removeReaction(messageId, user.id, emoji);
       } else {
-        const added = await addReaction(messageId, user.id, emoji);
+        const tempReactionId = `temp_rx_${Date.now()}`;
         setReactions(prev => ({
           ...prev,
-          [messageId]: [...(prev[messageId] || []), added[0] || { message_id: messageId, user_id: user.id, emoji }]
+          [messageId]: [...(prev[messageId] || []), { id: tempReactionId, message_id: messageId, user_id: user.id, emoji }]
         }));
+        const added = await addReaction(messageId, user.id, emoji);
+        if (added && added[0]) {
+          setReactions(prev => ({
+            ...prev,
+            [messageId]: (prev[messageId] || []).map(r => r.id === tempReactionId ? added[0] : r)
+          }));
+        }
       }
     } catch (err) {
       console.error('Reaction toggle error:', err);
