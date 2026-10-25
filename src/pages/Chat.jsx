@@ -19,6 +19,7 @@ export default function Chat({ isSearching, onToggleSearch }) {
     readStates,
     loadingMessages,
     hasMoreMessages,
+    partnerTyping,
     loadMoreMessages,
     toggleReaction,
     deleteMsg,
@@ -36,13 +37,13 @@ export default function Chat({ isSearching, onToggleSearch }) {
   const bottomAnchorRef = useRef(null);
   const isAtBottomRef = useRef(true);
 
-  // Auto scroll to bottom on new message if user is at bottom
+  // Auto scroll to bottom on new message or when partner begins typing
   useEffect(() => {
     if (isAtBottomRef.current && bottomAnchorRef.current) {
       bottomAnchorRef.current.scrollIntoView({ behavior: 'smooth' });
     }
     markChatRead();
-  }, [messages.length, markChatRead]);
+  }, [messages.length, partnerTyping, markChatRead]);
 
   const handleScroll = (e) => {
     const target = e.target;
@@ -180,6 +181,30 @@ export default function Chat({ isSearching, onToggleSearch }) {
               </React.Fragment>
             );
           })
+        )}
+        {partnerTyping && (
+          <div
+            className="animate-fade-in"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 14px',
+              marginBottom: '6px',
+              maxWidth: 'fit-content',
+              borderRadius: '16px',
+              backgroundColor: 'var(--bubble-bg-received)',
+              border: '1px solid var(--border-subtle)',
+              alignSelf: 'flex-start'
+            }}
+          >
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '3px' }}>
+              Typing
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+            </span>
+          </div>
         )}
         <div ref={bottomAnchorRef} />
       </div>

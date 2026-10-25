@@ -12,7 +12,6 @@ import {
   fetchChatReadStates
 } from '../services/messages';
 import { uploadChatPhoto } from '../services/storage';
-import { playSendChime, playReceiveChime } from '../utils/sound';
 
 const ChatContext = createContext(null);
 
@@ -30,6 +29,9 @@ export function ChatProvider({ children }) {
 
   const channelRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const partnerTypingTimerRef = useRef(null);
+  const lastTypingSentRef = useRef(0);
+  const isTypingActiveRef = useRef(false);
 
   const chatId = sanctuaryChat?.id || '00000000-0000-0000-0000-000000000001';
 
@@ -87,18 +89,40 @@ export function ChatProvider({ children }) {
     };
   }, [user, isAuthorized, chatId]);
 
-  // 2. Realtime Subscriptions (Postgres changes & Presence)
+  // 2. Realtime Subscriptions (Postgres changes, Presence & Low-Latency Broadcast)
   useEffect(() => {
     if (!user || !isAuthorized || !chatId) return;
 
-    // Join channel for the sanctuary chat room
+    // Join channel for the sanctuary chat room with broadcast and presence enabled
     const channel = supabase.channel(`sanctuary_${chatId}`, {
       config: {
-        presence: { key: user.id }
+        presence: { key: user.id },
+        broadcast: { self: false } // Ensures the sender never receives their own broadcast events
       }
     });
 
     channelRef.current = channel;
+
+    // Real-time broadcast listener for instant, reliable typing state
+    channel.on('broadcast', { event: 'typing' }, ({ payload }) => {
+      const { userId, isTyping } = payload || {};
+      if (!userId || userId === user.id) return;
+
+      if (partnerTypingTimerRef.current) {
+        clearTimeout(partnerTypingTimerRef.current);
+        partnerTypingTimerRef.current = null;
+      }
+
+      if (isTyping) {
+        setPartnerTyping(true);
+        // Safety fallback timeout: if sender abruptly disconnects or misses a stop event, clear after 2200ms
+        partnerTypingTimerRef.current = setTimeout(() => {
+          setPartnerTyping(false);
+        }, 2200);
+      } else {
+        setPartnerTyping(false);
+      }
+    });
 
     // Listen to real-time message inserts
     channel
@@ -165,10 +189,13 @@ export function ChatProvider({ children }) {
             return sortChronologically([...prev, newMsg]);
           });
 
-          // Play sound chime if received from partner
+          // If message is from partner: immediately clear partner typing and mark read
           if (newMsg.sender_id !== user.id) {
-            playReceiveChime();
-            // Automatically mark read
+            if (partnerTypingTimerRef.current) {
+              clearTimeout(partnerTypingTimerRef.current);
+              partnerTypingTimerRef.current = null;
+            }
+            setPartnerTyping(false);
             markChatRead(chatId, user.id, newMsg.id);
           }
         }
@@ -244,24 +271,18 @@ export function ChatProvider({ children }) {
           setReadStates(reads);
         }
       )
-      // Presence tracking (Partner Online & Typing)
+      // Presence tracking (Partner Online Status)
       .on('presence', { event: 'sync' }, () => {
         const state = channel.presenceState();
         let otherUserOnline = false;
-        let otherUserTyping = false;
 
         Object.keys(state).forEach(key => {
           if (key !== user.id) {
             otherUserOnline = true;
-            const presences = state[key];
-            if (presences?.some(p => p.typing)) {
-              otherUserTyping = true;
-            }
           }
         });
 
         setPartnerOnline(otherUserOnline);
-        setPartnerTyping(otherUserTyping);
       })
       .on('presence', { event: 'join' }, ({ key }) => {
         if (key !== user.id) setPartnerOnline(true);
@@ -270,13 +291,16 @@ export function ChatProvider({ children }) {
         if (key !== user.id) {
           setPartnerOnline(false);
           setPartnerTyping(false);
+          if (partnerTypingTimerRef.current) {
+            clearTimeout(partnerTypingTimerRef.current);
+            partnerTypingTimerRef.current = null;
+          }
         }
       })
       .subscribe((status, err) => {
         if (status === 'SUBSCRIBED') {
           channel.track({
-            online_at: new Date().toISOString(),
-            typing: false
+            online_at: new Date().toISOString()
           }).catch(() => {});
         } else if (status === 'CHANNEL_ERROR') {
           console.error('[Realtime] Subscription error on sanctuary channel:', err);
@@ -286,7 +310,21 @@ export function ChatProvider({ children }) {
       });
 
     return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+      if (partnerTypingTimerRef.current) {
+        clearTimeout(partnerTypingTimerRef.current);
+        partnerTypingTimerRef.current = null;
+      }
       if (channel) {
+        // Broadcast stopped typing before removing channel
+        channel.send({
+          type: 'broadcast',
+          event: 'typing',
+          payload: { userId: user.id, isTyping: false }
+        }).catch(() => {});
         supabase.removeChannel(channel);
       }
     };
@@ -319,27 +357,52 @@ export function ChatProvider({ children }) {
     return () => window.removeEventListener('online', handleReconnected);
   }, [chatId, user, isAuthorized]);
 
-  // Broadcast typing status
+  // Broadcast typing status with throttling and automatic 2-second timeout
   const broadcastTyping = useCallback((isTyping) => {
     if (!channelRef.current || !user) return;
 
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
     }
 
-    channelRef.current.track({
-      online_at: new Date().toISOString(),
-      typing: isTyping
-    }).catch(() => {});
+    const now = Date.now();
 
-    if (isTyping) {
-      typingTimeoutRef.current = setTimeout(() => {
-        channelRef.current?.track({
-          online_at: new Date().toISOString(),
-          typing: false
+    if (!isTyping) {
+      // User explicitly stopped typing, cleared input, or sent a message
+      if (isTypingActiveRef.current) {
+        isTypingActiveRef.current = false;
+        lastTypingSentRef.current = 0;
+        channelRef.current.send({
+          type: 'broadcast',
+          event: 'typing',
+          payload: { userId: user.id, isTyping: false }
         }).catch(() => {});
-      }, 3000);
+      }
+      return;
     }
+
+    // User is actively typing: throttle transmissions so we don't spam the network on every single keystroke
+    if (!isTypingActiveRef.current || now - lastTypingSentRef.current > 1500) {
+      isTypingActiveRef.current = true;
+      lastTypingSentRef.current = now;
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'typing',
+        payload: { userId: user.id, isTyping: true }
+      }).catch(() => {});
+    }
+
+    // Inactivity timeout: automatically broadcast false after ~2 seconds of silence
+    typingTimeoutRef.current = setTimeout(() => {
+      isTypingActiveRef.current = false;
+      lastTypingSentRef.current = 0;
+      channelRef.current?.send({
+        type: 'broadcast',
+        event: 'typing',
+        payload: { userId: user.id, isTyping: false }
+      }).catch(() => {});
+    }, 2000);
   }, [user]);
 
   // Load older messages for pagination
@@ -366,6 +429,9 @@ export function ChatProvider({ children }) {
   const sendTextMessage = async (text, replyTo = null) => {
     if (!text || !text.trim() || !user) return;
 
+    // Immediately stop typing indicator
+    broadcastTyping(false);
+
     const trimmed = text.trim();
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const optimisticMsg = {
@@ -385,8 +451,6 @@ export function ChatProvider({ children }) {
     };
 
     setMessages(prev => sortChronologically([...prev, optimisticMsg]));
-    playSendChime();
-    broadcastTyping(false);
 
     try {
       const sentMsg = await sendMessage({
@@ -418,6 +482,7 @@ export function ChatProvider({ children }) {
   // Send a private photo message
   const sendPhotoMessage = async (file, caption = '') => {
     if (!file || !user) return;
+    broadcastTyping(false);
     setUploadingPhoto(true);
     setUploadError(null);
 
@@ -458,7 +523,6 @@ export function ChatProvider({ children }) {
         }
       });
 
-      playSendChime();
       setMessages(prev => {
         if (prev.some(m => m.id === msg.id)) {
           return prev.filter(m => m.id !== tempId);
@@ -479,6 +543,7 @@ export function ChatProvider({ children }) {
   // Send a virtual gift card message
   const sendGiftMessage = async (gift) => {
     if (!gift || !user) return;
+    broadcastTyping(false);
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const giftMetadata = {
       gift_id: gift.id,
@@ -502,7 +567,6 @@ export function ChatProvider({ children }) {
     };
 
     setMessages(prev => sortChronologically([...prev, optimisticMsg]));
-    playSendChime();
 
     try {
       const msg = await sendMessage({
@@ -530,6 +594,7 @@ export function ChatProvider({ children }) {
   // Send a built-in expressive sticker
   const sendStickerMessage = async (sticker) => {
     if (!sticker || !user) return;
+    broadcastTyping(false);
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const stickerMetadata = {
       sticker_id: sticker.id,
@@ -551,7 +616,6 @@ export function ChatProvider({ children }) {
     };
 
     setMessages(prev => sortChronologically([...prev, optimisticMsg]));
-    playSendChime();
 
     try {
       const msg = await sendMessage({

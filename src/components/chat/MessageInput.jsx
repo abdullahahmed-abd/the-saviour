@@ -26,14 +26,29 @@ export default function MessageInput({
     }
   }, [text]);
 
+  // Clean up typing indicator on unmount
+  useEffect(() => {
+    return () => {
+      broadcastTyping(false);
+    };
+  }, [broadcastTyping]);
+
   const handleTextChange = (e) => {
-    setText(e.target.value);
-    broadcastTyping(true);
+    const val = e.target.value;
+    setText(val);
+    if (val.trim().length > 0) {
+      broadcastTyping(true);
+    } else {
+      broadcastTyping(false);
+    }
   };
 
   const handleSend = async (e) => {
     e?.preventDefault();
     if (!text.trim() || isSending) return;
+
+    // Immediately notify that user has stopped typing upon sending
+    broadcastTyping(false);
 
     setIsSending(true);
     const contentToSend = text;
@@ -70,7 +85,11 @@ export default function MessageInput({
   };
 
   const addEmoji = (emoji) => {
-    setText(prev => prev + emoji);
+    setText(prev => {
+      const next = prev + emoji;
+      broadcastTyping(true);
+      return next;
+    });
     if (textareaRef.current) {
       textareaRef.current.focus();
     }
