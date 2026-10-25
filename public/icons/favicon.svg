@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#070a10" />
+    </linearGradient>
+    <linearGradient id="primary-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7" />
+      <stop offset="50%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#38bdf8" />
+    </linearGradient>
+    <linearGradient id="inner-glow" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ec4899" />
+      <stop offset="100%" stop-color="#8b5cf6" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="16" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Background rounded rect -->
+  <rect width="512" height="512" rx="128" fill="url(#bg-grad)" />
+  <rect width="504" height="504" x="4" y="4" rx="124" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="4" />
+
+  <!-- Background subtle aura -->
+  <circle cx="256" cy="256" r="140" fill="url(#primary-grad)" opacity="0.15" filter="url(#glow)" />
+
+  <!-- Guardian Sanctuary Shield / Heart Wings Motif -->
+  <g transform="translate(256, 256)" filter="url(#glow)">
+    <!-- Outer Shield Crest -->
+    <path d="M 0 -130 
+             C 60 -130 110 -110 130 -60 
+             C 140 20 100 100 0 160 
+             C -100 100 -140 20 -130 -60 
+             C -110 -110 -60 -130 0 -130 Z" 
+          fill="none" 
+          stroke="url(#primary-grad)" 
+          stroke-width="18" 
+          stroke-linecap="round" 
+          stroke-linejoin="round" />
+
+    <!-- Inner Heart Sanctuary Shape -->
+    <path d="M 0 90 
+             C -60 40 -80 -20 -40 -60 
+             C -15 -85 0 -55 0 -40 
+             C 0 -55 15 -85 40 -60 
+             C 80 -20 60 40 0 90 Z" 
+          fill="url(#inner-glow)" 
+          opacity="0.9" />
+
+    <!-- Two Connected Intersecting Spark Stars (Representing the Two Authorized Souls) -->
+    <circle cx="-38" cy="-10" r="10" fill="#ffffff" />
+    <circle cx="38" cy="-10" r="10" fill="#ffffff" />
+    <!-- Connecting bond arc -->
+    <path d="M -38 -10 Q 0 20 38 -10" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" />
+  </g>
+</svg>

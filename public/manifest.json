@@ -1,0 +1,27 @@
+{
+  "name": "The Saviour",
+  "short_name": "The Saviour",
+  "description": "Private, real-time communication, shared memories and games for two.",
+  "start_url": "/",
+  "id": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0b0f19",
+  "theme_color": "#0b0f19",
+  "categories": ["social", "lifestyle"],
+  "icons": [
+    {
+      "src": "/icons/favicon.svg",
+      "sizes": "192x192 512x512 any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/favicon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

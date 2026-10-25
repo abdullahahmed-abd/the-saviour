@@ -1,0 +1,212 @@
+import React, { useState, useEffect } from 'react';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { ChatProvider } from './context/ChatContext';
+import Header from './components/layout/Header';
+import BottomNav from './components/layout/BottomNav';
+import Login from './pages/Login';
+import Unauthorized from './pages/Unauthorized';
+import Chat from './pages/Chat';
+import Fun from './pages/Fun';
+import Statistics from './pages/Statistics';
+import Memories from './pages/Memories';
+import Settings from './pages/Settings';
+import MoodModal from './components/mood/MoodModal';
+import { getLatestMoods } from './services/moods';
+import { Shield, WifiOff } from 'lucide-react';
+
+function AppContent() {
+  const { user, isAuthorized, loading, partnerProfile } = useAuth();
+  const [activeTab, setActiveTab] = useState('chat');
+  const [theme, setTheme] = useState('dark');
+  const [isSearching, setIsSearching] = useState(false);
+  const [showMoodModal, setShowMoodModal] = useState(false);
+  const [partnerMood, setPartnerMood] = useState(null);
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+
+  // Monitor online / offline status
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Listen for PWA install prompt
+  useEffect(() => {
+    const handlePrompt = (e) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handlePrompt);
+    return () => window.removeEventListener('beforeinstallprompt', handlePrompt);
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setInstallPrompt(null);
+    }
+  };
+
+  // Sync theme
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  // Load partner's latest mood
+  useEffect(() => {
+    if (user && isAuthorized) {
+      loadPartnerMood();
+    }
+  }, [user, isAuthorized, partnerProfile]);
+
+  const loadPartnerMood = async () => {
+    try {
+      const moods = await getLatestMoods();
+      if (partnerProfile && moods[partnerProfile.id]) {
+        setPartnerMood(moods[partnerProfile.id]);
+      }
+    } catch (e) {}
+  };
+
+  const handleToggleTheme = () => {
+    setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+  };
+
+  // Splash Loading Screen
+  if (loading) {
+    return (
+      <div
+        style={{
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: 'var(--bg-primary)',
+          gap: '16px'
+        }}
+      >
+        <div
+          style={{
+            width: '64px',
+            height: '64px',
+            borderRadius: '20px',
+            background: 'var(--accent-gradient)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 8px 30px var(--accent-glow)',
+            animation: 'pulseGlow 2s infinite ease-in-out'
+          }}
+        >
+          <Shield size={34} color="#ffffff" />
+        </div>
+        <div style={{ textAlign: 'center' }}>
+          <h2 style={{ fontSize: '20px', color: 'var(--text-primary)', margin: 0 }}>The Saviour</h2>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+            Entering your sanctuary...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Not logged in -> Show Login
+  if (!user) {
+    return <Login />;
+  }
+
+  // Logged in but not in authorized 2-member list -> Show Unauthorized Guard
+  if (!isAuthorized) {
+    return <Unauthorized />;
+  }
+
+  // Authorized -> Render full private chat PWA application
+  return (
+    <ChatProvider>
+      <div className="app-container">
+        {/* Offline Warning Banner */}
+        {!isOnline && (
+          <div
+            style={{
+              padding: '6px 12px',
+              backgroundColor: '#ef4444',
+              color: '#ffffff',
+              fontSize: '11px',
+              fontWeight: 600,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              zIndex: 100
+            }}
+          >
+            <WifiOff size={13} />
+            <span>You are currently offline. Messages will sync when connection returns.</span>
+          </div>
+        )}
+
+        {/* Global App Header */}
+        <Header
+          activeTab={activeTab}
+          onOpenMood={() => setShowMoodModal(true)}
+          onToggleSearch={() => setIsSearching(prev => !prev)}
+          isSearching={isSearching}
+          partnerMood={partnerMood}
+          installPrompt={Boolean(installPrompt)}
+          onInstall={handleInstallApp}
+        />
+
+        {/* Main View Port */}
+        <main className="main-content">
+          {activeTab === 'chat' && (
+            <Chat
+              isSearching={isSearching}
+              onToggleSearch={() => setIsSearching(false)}
+            />
+          )}
+          {activeTab === 'fun' && <Fun />}
+          {activeTab === 'statistics' && <Statistics />}
+          {activeTab === 'memories' && <Memories />}
+          {activeTab === 'settings' && (
+            <Settings
+              theme={theme}
+              onToggleTheme={handleToggleTheme}
+              installPrompt={Boolean(installPrompt)}
+              onInstall={handleInstallApp}
+            />
+          )}
+        </main>
+
+        {/* Bottom Navigation */}
+        <BottomNav activeTab={activeTab} onSelectTab={setActiveTab} />
+
+        {/* Mood Check-In Modal */}
+        <MoodModal
+          isOpen={showMoodModal}
+          onClose={() => setShowMoodModal(false)}
+          onMoodUpdated={loadPartnerMood}
+        />
+      </div>
+    </ChatProvider>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  );
+}
