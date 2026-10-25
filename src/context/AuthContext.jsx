@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from '../services/supabase';
 import {
   signIn,
@@ -19,6 +19,7 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [configured, setConfigured] = useState(isSupabaseConfigured());
   const [authError, setAuthError] = useState(null);
+  const loadingUserRef = useRef(null);
 
   // Initialize session
   useEffect(() => {
@@ -79,6 +80,10 @@ export function AuthProvider({ children }) {
   }, [configured]);
 
   async function loadUserContext(currentUser) {
+    if (!currentUser?.id) return;
+    if (loadingUserRef.current === currentUser.id) return;
+    loadingUserRef.current = currentUser.id;
+
     try {
       // 1. Verify authorization
       const authorized = await checkUserAuthorization(currentUser.id, currentUser.email);
@@ -109,6 +114,8 @@ export function AuthProvider({ children }) {
       setPartnerProfile(sanctuaryData.partner);
     } catch (err) {
       console.error('Failed to load user context:', err);
+    } finally {
+      loadingUserRef.current = null;
     }
   }
 

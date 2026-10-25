@@ -60,7 +60,7 @@ export async function markCardCompleted(cardId, userId) {
       user_id: userId,
       is_completed: true,
       completed_at: new Date().toISOString()
-    }, { onConflict: 'card_id, user_id' })
+    }, { onConflict: 'card_id,user_id' })
     .select()
     .single();
 

@@ -124,21 +124,41 @@ export async function getSanctuaryChat(currentUserId) {
     chat = newChat;
   }
 
-  // Ensure current user is in chat_members
-  if (currentUserId) {
-    await supabase
-      .from('chat_members')
-      .upsert(
-        { chat_id: defaultChatId, user_id: currentUserId },
-        { onConflict: 'chat_id, user_id' }
-      );
-  }
-
-  // Fetch all members of this sanctuary
-  const { data: members } = await supabase
+  // Fetch all members of this sanctuary first
+  let { data: members, error: membersError } = await supabase
     .from('chat_members')
     .select('user_id, profiles(id, display_name, avatar_url, status_message, last_seen)')
     .eq('chat_id', defaultChatId);
+
+  if (membersError) {
+    console.error('Failed to fetch chat members:', membersError.message);
+  }
+
+  const memberList = members || [];
+  const isAlreadyMember = currentUserId && memberList.some(m => m.user_id === currentUserId);
+
+  // If user is not yet a member and sanctuary has space (< 2 members), join cleanly
+  if (currentUserId && !isAlreadyMember && memberList.length < 2) {
+    const { error: joinError } = await supabase
+      .from('chat_members')
+      .insert({ chat_id: defaultChatId, user_id: currentUserId });
+
+    if (joinError) {
+      // 23505 is PostgreSQL unique_violation (in case of concurrent insert)
+      if (joinError.code !== '23505') {
+        console.warn('Could not join chat_members:', joinError.message);
+      }
+    } else {
+      // Refetch members so the caller gets the updated list including the new user
+      const { data: refreshedMembers } = await supabase
+        .from('chat_members')
+        .select('user_id, profiles(id, display_name, avatar_url, status_message, last_seen)')
+        .eq('chat_id', defaultChatId);
+      if (refreshedMembers) {
+        members = refreshedMembers;
+      }
+    }
+  }
 
   const parsedMembers = (members || []).map(m => m.profiles).filter(Boolean);
   const partner = parsedMembers.find(p => p.id !== currentUserId) || null;

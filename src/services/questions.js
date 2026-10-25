@@ -68,7 +68,7 @@ export async function submitDailyAnswer(questionId, userId, answer) {
         answer: answer.trim(),
         answered_at: new Date().toISOString()
       },
-      { onConflict: 'question_id, user_id' }
+      { onConflict: 'question_id,user_id' }
     )
     .select(`
       id,

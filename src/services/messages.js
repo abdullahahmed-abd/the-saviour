@@ -185,7 +185,7 @@ export async function addReaction(messageId, userId, emoji) {
     .from('message_reactions')
     .upsert(
       { message_id: messageId, user_id: userId, emoji },
-      { onConflict: 'message_id, user_id, emoji' }
+      { onConflict: 'message_id,user_id,emoji' }
     )
     .select();
 
@@ -245,7 +245,7 @@ export async function markChatRead(chatId, userId, lastMessageId) {
         last_read_message_id: lastMessageId,
         last_read_at: new Date().toISOString()
       },
-      { onConflict: 'chat_id, user_id' }
+      { onConflict: 'chat_id,user_id' }
     );
 
   if (error) console.warn('Could not update read state:', error.message);
