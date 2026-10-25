@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Image, Gift, Smile, X, Sparkles } from 'lucide-react';
+import { Send, Image, Gift, Smile, X, Sparkles, Lock } from 'lucide-react';
 import { useChat } from '../../context/ChatContext';
+import { useCrypto } from '../../context/CryptoContext';
 
 const QUICK_EMOJI_LIST = ['❤️', '🥰', '🥺', '😂', '✨', '🌹', '☕', '🔥', '🫂', '🌙', '🍕', '🎉'];
 
@@ -12,11 +13,14 @@ export default function MessageInput({
   onSelectPhotoFile
 }) {
   const { sendTextMessage, broadcastTyping } = useChat();
+  const { cryptoState, conversationKey, setUnlockModalOpen, setSetupModalOpen } = useCrypto();
   const [text, setText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  const isKeyReady = cryptoState === 'ready' && Boolean(conversationKey);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -43,8 +47,17 @@ export default function MessageInput({
     }
   };
 
+  const handleSecurityAction = () => {
+    if (cryptoState === 'locked') setUnlockModalOpen(true);
+    else if (cryptoState === 'uninitialized') setSetupModalOpen(true);
+  };
+
   const handleSend = async (e) => {
     e?.preventDefault();
+    if (!isKeyReady) {
+      handleSecurityAction();
+      return;
+    }
     if (!text.trim() || isSending) return;
 
     // Immediately notify that user has stopped typing upon sending
@@ -164,6 +177,43 @@ export default function MessageInput({
         </div>
       )}
 
+      {/* E2EE Lock / Uninitialized Security Bar */}
+      {!isKeyReady && (
+        <div
+          onClick={handleSecurityAction}
+          style={{
+            cursor: (cryptoState === 'locked' || cryptoState === 'uninitialized') ? 'pointer' : 'default',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            borderRadius: 'var(--radius-md)',
+            padding: '8px 12px',
+            fontSize: '12px',
+            color: '#f87171'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Lock size={14} />
+            <span>
+              {cryptoState === 'locked'
+                ? 'Encryption vault locked — tap here to unlock'
+                : cryptoState === 'uninitialized'
+                ? 'E2EE setup required — tap here to initialize'
+                : cryptoState === 'key_mismatch'
+                ? 'Partner encryption key changed — verify safety number'
+                : 'Waiting for partner public keys...'}
+            </span>
+          </div>
+          {(cryptoState === 'locked' || cryptoState === 'uninitialized') && (
+            <span style={{ textDecoration: 'underline', fontWeight: 600, fontSize: '11px' }}>
+              {cryptoState === 'locked' ? 'Unlock' : 'Setup'}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Main input controls bar */}
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', width: '100%' }}>
         {/* Attachment menu items */}
@@ -180,8 +230,14 @@ export default function MessageInput({
           {/* Photo attach button */}
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
-            title="Send Photo"
+            onClick={() => {
+              if (!isKeyReady) {
+                handleSecurityAction();
+                return;
+              }
+              fileInputRef.current?.click();
+            }}
+            title={!isKeyReady ? 'Unlock encryption to send photos' : 'Send Photo'}
             className="btn-ghost"
             style={{
               padding: '8px',
@@ -197,8 +253,14 @@ export default function MessageInput({
           {/* Virtual Gift button */}
           <button
             type="button"
-            onClick={onOpenGifts}
-            title="Send Virtual Gift"
+            onClick={() => {
+              if (!isKeyReady) {
+                handleSecurityAction();
+                return;
+              }
+              onOpenGifts();
+            }}
+            title={!isKeyReady ? 'Unlock encryption to send gifts' : 'Send Virtual Gift'}
             className="btn-ghost"
             style={{
               padding: '8px',
@@ -214,8 +276,14 @@ export default function MessageInput({
           {/* Stickers button */}
           <button
             type="button"
-            onClick={onOpenStickers}
-            title="Stickers & Expressions"
+            onClick={() => {
+              if (!isKeyReady) {
+                handleSecurityAction();
+                return;
+              }
+              onOpenStickers();
+            }}
+            title={!isKeyReady ? 'Unlock encryption to send expressions' : 'Stickers & Expressions'}
             className="btn-ghost"
             style={{
               padding: '8px',
@@ -248,7 +316,18 @@ export default function MessageInput({
             value={text}
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
-            placeholder="Whisper something sweet..."
+            onClick={() => {
+              if (!isKeyReady) handleSecurityAction();
+            }}
+            placeholder={
+              !isKeyReady
+                ? (cryptoState === 'locked'
+                  ? '🔒 Vault is locked — click to unlock...'
+                  : cryptoState === 'uninitialized'
+                  ? '🔒 E2EE setup required — click to setup...'
+                  : '🔒 Waiting for encryption keys...')
+                : 'Whisper something sweet...'
+            }
             style={{
               flex: 1,
               background: 'transparent',
@@ -284,19 +363,22 @@ export default function MessageInput({
         <button
           type="button"
           onClick={handleSend}
-          disabled={!text.trim() || isSending}
+          disabled={isSending || (isKeyReady && !text.trim())}
           className="btn btn-primary"
+          title={!isKeyReady ? 'Encryption is locked or unready' : 'Send encrypted message'}
           style={{
             width: '42px',
             height: '42px',
             padding: 0,
             borderRadius: '50%',
-            opacity: text.trim() ? 1 : 0.4,
-            cursor: text.trim() ? 'pointer' : 'default',
-            flexShrink: 0
+            opacity: (!isKeyReady || text.trim()) ? 1 : 0.4,
+            cursor: (!isKeyReady || text.trim()) ? 'pointer' : 'default',
+            flexShrink: 0,
+            backgroundColor: !isKeyReady ? 'rgba(239, 68, 68, 0.2)' : undefined,
+            color: !isKeyReady ? '#f87171' : undefined
           }}
         >
-          <Send size={18} />
+          {!isKeyReady ? <Lock size={17} /> : <Send size={18} />}
         </button>
       </div>
     </div>

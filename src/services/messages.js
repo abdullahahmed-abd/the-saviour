@@ -1,4 +1,88 @@
-import { supabase } from './supabase';
+import { supabase } from './supabase.js';
+import { isEncryptedMessage, decryptMessage } from './crypto.js';
+
+/**
+ * Decrypt a single message record in memory
+ */
+export async function decryptMessageRecord(messageRow, conversationKey) {
+  if (!messageRow) return messageRow;
+
+  // Preserve soft-deleted messages
+  if (messageRow.is_deleted) {
+    return {
+      ...messageRow,
+      is_deleted: true,
+      content: 'This message was deleted'
+    };
+  }
+
+  const cipherTextToDecrypt = messageRow.raw_ciphertext || messageRow.content;
+
+  // If content is not an encrypted envelope, it's a legacy unencrypted message
+  if (!isEncryptedMessage(cipherTextToDecrypt)) {
+    return {
+      ...messageRow,
+      is_legacy_unencrypted: true
+    };
+  }
+
+  // If conversationKey is unavailable
+  if (!conversationKey) {
+    return {
+      ...messageRow,
+      is_encrypted: true,
+      is_decrypt_error: true,
+      raw_ciphertext: cipherTextToDecrypt,
+      content: '🔒 Encrypted message (keys unavailable)'
+    };
+  }
+
+  try {
+    const { isEncrypted, epoch, payload } = await decryptMessage(cipherTextToDecrypt, conversationKey);
+
+    if (!isEncrypted) {
+      return {
+        ...messageRow,
+        is_legacy_unencrypted: true
+      };
+    }
+
+    if (typeof payload === 'object' && payload !== null) {
+      const mergedMetadata = {
+        ...(messageRow.metadata || {}),
+        ...(payload.reply_to ? { reply_to: payload.reply_to } : {}),
+        ...(payload.gift ? payload.gift : {}),
+        ...(payload.sticker ? payload.sticker : {}),
+        ...(payload.photo_path ? { photo_path: payload.photo_path } : {})
+      };
+
+      return {
+        ...messageRow,
+        is_encrypted: true,
+        epoch,
+        raw_ciphertext: cipherTextToDecrypt,
+        content: payload.text !== undefined ? payload.text : (payload.caption || ''),
+        metadata: mergedMetadata
+      };
+    }
+
+    return {
+      ...messageRow,
+      is_encrypted: true,
+      epoch,
+      raw_ciphertext: cipherTextToDecrypt,
+      content: payload
+    };
+  } catch (err) {
+    return {
+      ...messageRow,
+      is_encrypted: true,
+      is_decrypt_error: true,
+      raw_ciphertext: cipherTextToDecrypt,
+      content: '🔒 Unable to decrypt message'
+    };
+  }
+}
 
 /**
  * Fetch messages with pagination

@@ -8,6 +8,11 @@ import {
   Calendar,
   Smartphone,
   ShieldCheck,
+  Shield,
+  ShieldAlert,
+  Key,
+  KeyRound,
+  FileDown,
   LogOut,
   Save,
   Check,
@@ -15,14 +20,27 @@ import {
   Download
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useCrypto } from '../context/CryptoContext';
 import { updateProfile } from '../services/auth';
 import Avatar from '../components/common/Avatar';
 import SpecialEvents from './SpecialEvents';
 
 export default function Settings({ theme, onToggleTheme, installPrompt, onInstall }) {
   const { user, profile, partnerProfile, logout, refreshProfile } = useAuth();
+  const {
+    cryptoState,
+    isPartnerVerified,
+    setSafetyModalOpen,
+    setSetupModalOpen,
+    downloadOfflineBackup
+  } = useCrypto();
 
   const [displayName, setDisplayName] = useState(profile?.display_name || '');
+  const [showBackupPrompt, setShowBackupPrompt] = useState(false);
+  const [backupPassphrase, setBackupPassphrase] = useState('');
+  const [backupError, setBackupError] = useState(null);
+  const [backupSuccess, setBackupSuccess] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [statusMessage, setStatusMessage] = useState(profile?.status_message || '');
   const [avatarUrl, setAvatarUrl] = useState(profile?.avatar_url || '');
   const [streaksEnabled, setStreaksEnabled] = useState(true);
@@ -64,6 +82,24 @@ export default function Settings({ theme, onToggleTheme, installPrompt, onInstal
       }
     } else {
       alert('Notifications are not supported in this browser.');
+    }
+  };
+
+  const handleDownloadOfflineBackup = async (e) => {
+    e.preventDefault();
+    if (!backupPassphrase || isExporting) return;
+    setIsExporting(true);
+    setBackupError(null);
+    try {
+      await downloadOfflineBackup(backupPassphrase);
+      setBackupSuccess(true);
+      setShowBackupPrompt(false);
+      setBackupPassphrase('');
+      setTimeout(() => setBackupSuccess(false), 3000);
+    } catch (err) {
+      setBackupError(err.message || 'Failed to export backup file.');
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -361,6 +397,128 @@ export default function Settings({ theme, onToggleTheme, installPrompt, onInstal
             <Download size={15} /> Install The Saviour App
           </button>
         )}
+      </div>
+
+      {/* End-to-End Encryption (E2EE) Card */}
+      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Shield size={18} color={isPartnerVerified ? '#10b981' : cryptoState === 'key_mismatch' ? '#ef4444' : 'var(--accent-primary)'} />
+            <div style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--text-primary)' }}>
+              End-to-End Encryption
+            </div>
+          </div>
+          <span
+            style={{
+              fontSize: '11px',
+              padding: '3px 8px',
+              borderRadius: '6px',
+              fontWeight: 600,
+              backgroundColor: isPartnerVerified ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+              color: isPartnerVerified ? '#10b981' : '#f59e0b',
+              border: `1px solid ${isPartnerVerified ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`
+            }}
+          >
+            {isPartnerVerified ? 'Verified' : cryptoState === 'ready' ? 'Active (Unverified)' : cryptoState}
+          </span>
+        </div>
+
+        <p style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
+          Your sanctuary uses hardware-accelerated ECDH P-256 and authenticated AES-256-GCM. Messages and photos can only be decrypted on authorized devices.
+        </p>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', paddingTop: '4px' }}>
+          {/* Compare Safety Number Action */}
+          <button
+            type="button"
+            onClick={() => setSafetyModalOpen(true)}
+            className="btn btn-secondary"
+            style={{ width: '100%', padding: '10px 14px', fontSize: '12.5px', justifyContent: 'space-between' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <KeyRound size={15} color="var(--accent-cyan)" />
+              <span>Verify Safety Number</span>
+            </div>
+            <span style={{ fontSize: '11px', opacity: 0.8 }}>Compare digits →</span>
+          </button>
+
+          {/* Export Offline Backup */}
+          {!showBackupPrompt ? (
+            <button
+              type="button"
+              onClick={() => setShowBackupPrompt(true)}
+              className="btn btn-secondary"
+              style={{ width: '100%', padding: '10px 14px', fontSize: '12.5px', justifyContent: 'space-between' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <FileDown size={15} color="var(--accent-primary)" />
+                <span>Download Offline Key Backup</span>
+              </div>
+              <span style={{ fontSize: '11px', opacity: 0.8 }}>.saviour-backup</span>
+            </button>
+          ) : (
+            <form onSubmit={handleDownloadOfflineBackup} style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px', backgroundColor: 'var(--bg-input)', borderRadius: '10px', border: '1px solid var(--border-subtle)' }}>
+              <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
+                Enter your Sanctuary Passphrase to encrypt your downloadable backup file:
+              </div>
+              <input
+                type="password"
+                value={backupPassphrase}
+                onChange={(e) => setBackupPassphrase(e.target.value)}
+                placeholder="Sanctuary Passphrase..."
+                required
+                style={{
+                  width: '100%',
+                  backgroundColor: 'var(--bg-surface)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: '6px',
+                  padding: '8px 10px',
+                  color: 'var(--text-primary)',
+                  fontSize: '12.5px',
+                  outline: 'none'
+                }}
+              />
+              {backupError && (
+                <div style={{ fontSize: '11.5px', color: '#f87171' }}>{backupError}</div>
+              )}
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowBackupPrompt(false)}
+                  className="btn-ghost"
+                  style={{ flex: 1, padding: '6px', fontSize: '11.5px', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isExporting || !backupPassphrase}
+                  className="btn btn-primary"
+                  style={{ flex: 2, padding: '6px', fontSize: '11.5px' }}
+                >
+                  {isExporting ? 'Exporting...' : 'Save File'}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {backupSuccess && (
+            <div style={{ fontSize: '11.5px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <Check size={13} />
+              <span>Offline key backup downloaded successfully!</span>
+            </div>
+          )}
+
+          {/* Re-run setup / Re-encrypt vault */}
+          <button
+            type="button"
+            onClick={() => setSetupModalOpen(true)}
+            className="btn-ghost"
+            style={{ width: '100%', padding: '6px', fontSize: '11.5px', color: 'var(--text-muted)', cursor: 'pointer' }}
+          >
+            Re-run E2EE Setup or Change Passphrase
+          </button>
+        </div>
       </div>
 
       {/* Security & RLS Verification Card */}

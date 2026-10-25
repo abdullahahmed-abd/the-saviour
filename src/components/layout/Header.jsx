@@ -1,9 +1,10 @@
 import React from 'react';
-import { Shield, Search, Smile, Sparkles, Download } from 'lucide-react';
+import { Shield, ShieldCheck, ShieldAlert, Search, Smile, Sparkles, Download } from 'lucide-react';
 import Avatar from '../common/Avatar';
 import SaviourLogo from '../common/SaviourLogo';
 import { useAuth } from '../../context/AuthContext';
 import { useChat } from '../../context/ChatContext';
+import { useCrypto } from '../../context/CryptoContext';
 
 export default function Header({
   activeTab,
@@ -16,6 +17,7 @@ export default function Header({
 }) {
   const { partnerProfile } = useAuth();
   const { partnerTyping, partnerOnline } = useChat();
+  const { cryptoState, isPartnerVerified, setSafetyModalOpen, setSetupModalOpen } = useCrypto();
 
   const partnerName = partnerProfile?.display_name || 'My Sanctuary';
 
@@ -52,6 +54,42 @@ export default function Header({
 
       {/* Action Controls */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        {/* E2EE Shield status icon */}
+        <button
+          onClick={() => {
+            if (cryptoState === 'uninitialized') {
+              setSetupModalOpen(true);
+            } else {
+              setSafetyModalOpen(true);
+            }
+          }}
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: '6px',
+            borderRadius: '50%',
+            cursor: 'pointer',
+            color: isPartnerVerified ? '#10b981' : cryptoState === 'key_mismatch' ? '#ef4444' : 'var(--accent-primary)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+          title={
+            isPartnerVerified
+              ? 'End-to-End Encrypted (Safety Number Verified)'
+              : cryptoState === 'key_mismatch'
+              ? 'Warning: Partner Key Mismatch'
+              : 'End-to-End Encrypted (Tap to view Safety Number)'
+          }
+        >
+          {isPartnerVerified ? (
+            <ShieldCheck size={18} />
+          ) : cryptoState === 'key_mismatch' ? (
+            <ShieldAlert size={18} />
+          ) : (
+            <Shield size={18} />
+          )}
+        </button>
         {/* PWA Install Button if available */}
         {installPrompt && (
           <button

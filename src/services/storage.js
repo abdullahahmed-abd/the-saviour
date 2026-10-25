@@ -1,60 +1,147 @@
 import { supabase } from './supabase';
 import { compressImage } from '../utils/imageCompressor';
+import { encryptBinary, decryptBinary } from './crypto';
 
 const BUCKET_NAME = 'chat-photos';
 const signedUrlCache = new Map(); // path -> { url, expiresAt }
+const decryptedBlobUrlCache = new Map(); // path -> blobUrl
 
 /**
- * Upload a private photo to Supabase Storage
+ * Upload an End-to-End Encrypted photo to Supabase Storage.
+ * 
+ * Flow:
+ * 1. Checks that conversationKey is present. NEVER uploads plaintext as fallback.
+ * 2. Compresses image locally to WebP (stripping EXIF metadata).
+ * 3. Encrypts compressed binary using AES-256-GCM.
+ * 4. Uploads ciphertext binary blob with non-identifying filename (.enc).
  */
-export async function uploadChatPhoto(file, chatId, userId) {
+export async function uploadEncryptedChatPhoto(file, chatId, userId, conversationKey) {
   if (!file) throw new Error('No file provided');
+  if (!conversationKey) {
+    throw new Error('E2EE key is unavailable. Uploading unencrypted photos is strictly blocked.');
+  }
 
   // Check initial file size limit (5MB)
   if (file.size > 5 * 1024 * 1024) {
     throw new Error('Image exceeds 5MB limit. Please select a smaller photo.');
   }
 
-  // Compress photo locally
+  // 1. Compress photo locally (strips EXIF & dimensions)
   const processedFile = await compressImage(file);
+  const arrayBuffer = await processedFile.arrayBuffer();
 
-  const fileExt = processedFile.name.split('.').pop() || 'webp';
-  const cleanFileName = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
+  // 2. Encrypt binary payload with AES-256-GCM
+  // Format: [12 bytes IV][Ciphertext + 16-byte Auth Tag]
+  const encryptedBytes = await encryptBinary(arrayBuffer, conversationKey);
+
+  // 3. Prepare non-identifying filename
+  const cleanFileName = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}.enc`;
   const filePath = `photos/${chatId}/${userId}/${cleanFileName}`;
 
+  const encryptedBlob = new Blob([encryptedBytes], { type: 'application/octet-stream' });
+
+  // 4. Upload raw ciphertext to private bucket
   const { data, error } = await supabase.storage
     .from(BUCKET_NAME)
-    .upload(filePath, processedFile, {
+    .upload(filePath, encryptedBlob, {
+      contentType: 'application/octet-stream',
       cacheControl: '3600',
       upsert: false
     });
 
   if (error) {
-    console.error('Storage upload error:', error);
-    throw new Error(error.message || 'Failed to upload photo.');
+    // If Supabase storage bucket currently restricts mime types before migration,
+    // upload with image/webp content-type header while preserving pure ciphertext bytes
+    if (error.message?.includes('mime') || error.error === 'Invalid MIME type') {
+      const fallbackUpload = await supabase.storage
+        .from(BUCKET_NAME)
+        .upload(filePath, encryptedBlob, {
+          contentType: 'image/webp',
+          cacheControl: '3600',
+          upsert: false
+        });
+      if (fallbackUpload.error) {
+        throw new Error(fallbackUpload.error.message || 'Failed to upload encrypted photo.');
+      }
+      return {
+        path: fallbackUpload.data.path,
+        size: encryptedBytes.byteLength
+      };
+    }
+    throw new Error(error.message || 'Failed to upload encrypted photo.');
   }
-
-  // Pre-generate signed URL
-  const signedUrl = await getSignedPhotoUrl(data.path);
 
   return {
     path: data.path,
-    signedUrl,
-    size: processedFile.size,
-    type: processedFile.type
+    size: encryptedBytes.byteLength
   };
 }
 
 /**
- * Retrieve short-lived signed URL for a private photo path.
- * Cached in memory so we do not spam Supabase API for the same image.
+ * Download and decrypt an encrypted photo from Supabase Storage.
+ * 
+ * Returns an in-memory Blob URL for local rendering.
+ * Caches Blob URL in memory so subsequent renders are instantaneous.
+ */
+export async function downloadAndDecryptChatPhoto(path, conversationKey) {
+  if (!path) return '';
+
+  // 1. Check in-memory decrypted Blob URL cache
+  if (decryptedBlobUrlCache.has(path)) {
+    return decryptedBlobUrlCache.get(path);
+  }
+
+  // 2. Legacy unencrypted photo fallback (for historical messages prior to E2EE)
+  if (!path.endsWith('.enc')) {
+    return getSignedPhotoUrl(path);
+  }
+
+  // 3. Ensure key is available
+  if (!conversationKey) {
+    throw new Error('Conversation key is not available for decryption.');
+  }
+
+  // 4. Download raw encrypted bytes from private storage
+  const { data: blob, error } = await supabase.storage
+    .from(BUCKET_NAME)
+    .download(path);
+
+  if (error) {
+    throw new Error('Failed to download encrypted photo: ' + error.message);
+  }
+
+  // 5. Decrypt binary with AES-256-GCM
+  const arrayBuffer = await blob.arrayBuffer();
+  const decryptedBuffer = await decryptBinary(new Uint8Array(arrayBuffer), conversationKey);
+
+  // 6. Construct local WebP Blob & URL
+  const decryptedBlob = new Blob([decryptedBuffer], { type: 'image/webp' });
+  const blobUrl = URL.createObjectURL(decryptedBlob);
+
+  decryptedBlobUrlCache.set(path, blobUrl);
+  return blobUrl;
+}
+
+/**
+ * Revoke all temporary in-memory Object URLs to prevent memory leaks
+ */
+export function revokeAllDecryptedBlobUrls() {
+  for (const blobUrl of decryptedBlobUrlCache.values()) {
+    try {
+      URL.revokeObjectURL(blobUrl);
+    } catch (e) {}
+  }
+  decryptedBlobUrlCache.clear();
+}
+
+/**
+ * Retrieve short-lived signed URL for a private photo path (legacy compatibility).
  */
 export async function getSignedPhotoUrl(path, expiresIn = 3600) {
   if (!path) return '';
 
   const cached = signedUrlCache.get(path);
   const now = Date.now();
-  // If cached and more than 5 minutes remain before expiry, reuse
   if (cached && cached.expiresAt > now + 300000) {
     return cached.url;
   }
@@ -77,7 +164,7 @@ export async function getSignedPhotoUrl(path, expiresIn = 3600) {
 }
 
 /**
- * Delete a private photo
+ * Delete a photo
  */
 export async function deleteChatPhoto(path) {
   if (!path) return;
@@ -86,9 +173,15 @@ export async function deleteChatPhoto(path) {
     .remove([path]);
 
   if (error) {
-    console.error('Failed to delete photo:', error);
     throw error;
   }
 
   signedUrlCache.delete(path);
+  if (decryptedBlobUrlCache.has(path)) {
+    const url = decryptedBlobUrlCache.get(path);
+    try {
+      URL.revokeObjectURL(url);
+    } catch (e) {}
+    decryptedBlobUrlCache.delete(path);
+  }
 }

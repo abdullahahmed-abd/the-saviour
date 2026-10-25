@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../services/supabase';
 import { useAuth } from './AuthContext';
+import { useCrypto } from './CryptoContext';
 import {
   fetchMessages,
   sendMessage,
@@ -9,14 +10,18 @@ import {
   removeReaction,
   fetchReactionsForMessages,
   markChatRead,
-  fetchChatReadStates
+  fetchChatReadStates,
+  decryptMessageRecord
 } from '../services/messages';
-import { uploadChatPhoto } from '../services/storage';
+import { uploadEncryptedChatPhoto, revokeAllDecryptedBlobUrls } from '../services/storage';
+import { encryptMessage, isEncryptedMessage } from '../services/crypto';
 
 const ChatContext = createContext(null);
 
 export function ChatProvider({ children }) {
   const { user, profile, partnerProfile, sanctuaryChat, isAuthorized } = useAuth();
+  const { conversationKey, cryptoState, setSetupModalOpen, setUnlockModalOpen } = useCrypto();
+
   const [messages, setMessages] = useState([]);
   const [reactions, setReactions] = useState({});
   const [readStates, setReadStates] = useState([]);
@@ -32,6 +37,11 @@ export function ChatProvider({ children }) {
   const partnerTypingTimerRef = useRef(null);
   const lastTypingSentRef = useRef(0);
   const isTypingActiveRef = useRef(false);
+  const conversationKeyRef = useRef(conversationKey);
+
+  useEffect(() => {
+    conversationKeyRef.current = conversationKey;
+  }, [conversationKey]);
 
   const chatId = sanctuaryChat?.id || '00000000-0000-0000-0000-000000000001';
 
@@ -40,7 +50,7 @@ export function ChatProvider({ children }) {
     return [...list].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
   };
 
-  // 1. Initial Load of Messages & Reactions
+  // 1. Initial Load of Messages & Reactions (with Decryption)
   useEffect(() => {
     if (!user || !isAuthorized) {
       setMessages([]);
@@ -56,7 +66,12 @@ export function ChatProvider({ children }) {
         const msgs = await fetchMessages(chatId, 50);
         if (!isMounted) return;
 
-        setMessages(sortChronologically(msgs));
+        // Decrypt messages locally before storing in React state
+        const decrypted = await Promise.all(
+          msgs.map(m => decryptMessageRecord(m, conversationKeyRef.current))
+        );
+
+        setMessages(sortChronologically(decrypted));
         if (msgs.length < 50) {
           setHasMoreMessages(false);
         }
@@ -89,21 +104,37 @@ export function ChatProvider({ children }) {
     };
   }, [user, isAuthorized, chatId]);
 
-  // 2. Realtime Subscriptions (Postgres changes, Presence & Low-Latency Broadcast)
+  // 2. Re-decrypt in-memory messages whenever conversationKey becomes available (e.g. after unlock)
+  useEffect(() => {
+    if (!conversationKey) return;
+
+    setMessages(prev => {
+      const needsDecryption = prev.some(
+        m => isEncryptedMessage(m.content) || m.is_decrypt_error || m.raw_ciphertext
+      );
+      if (!needsDecryption) return prev;
+
+      Promise.all(prev.map(m => decryptMessageRecord(m, conversationKey))).then(updated => {
+        setMessages(sortChronologically(updated));
+      });
+      return prev;
+    });
+  }, [conversationKey]);
+
+  // 3. Realtime Subscriptions (Postgres changes, Presence & Low-Latency Broadcast)
   useEffect(() => {
     if (!user || !isAuthorized || !chatId) return;
 
-    // Join channel for the sanctuary chat room with broadcast and presence enabled
     const channel = supabase.channel(`sanctuary_${chatId}`, {
       config: {
         presence: { key: user.id },
-        broadcast: { self: false } // Ensures the sender never receives their own broadcast events
+        broadcast: { self: false }
       }
     });
 
     channelRef.current = channel;
 
-    // Real-time broadcast listener for instant, reliable typing state
+    // Real-time typing broadcast listener
     channel.on('broadcast', { event: 'typing' }, ({ payload }) => {
       const { userId, isTyping } = payload || {};
       if (!userId || userId === user.id) return;
@@ -115,7 +146,6 @@ export function ChatProvider({ children }) {
 
       if (isTyping) {
         setPartnerTyping(true);
-        // Safety fallback timeout: if sender abruptly disconnects or misses a stop event, clear after 2200ms
         partnerTypingTimerRef.current = setTimeout(() => {
           setPartnerTyping(false);
         }, 2200);
@@ -129,13 +159,14 @@ export function ChatProvider({ children }) {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
-        (payload) => {
-          const newMsg = payload.new;
-          if (!newMsg || !newMsg.id) return;
-          // Filter to the current sanctuary room
-          if (newMsg.chat_id && newMsg.chat_id !== chatId) return;
+        async (payload) => {
+          const rawMsg = payload.new;
+          if (!rawMsg || !rawMsg.id) return;
+          if (rawMsg.chat_id && rawMsg.chat_id !== chatId) return;
 
-          // Attach sender profile immediately from auth context without network delay
+          // Decrypt incoming message immediately
+          const newMsg = await decryptMessageRecord(rawMsg, conversationKeyRef.current);
+
           const senderProfile = (newMsg.sender_id === user?.id)
             ? profile
             : (partnerProfile && partnerProfile.id === newMsg.sender_id ? partnerProfile : null);
@@ -147,7 +178,7 @@ export function ChatProvider({ children }) {
           };
 
           setMessages((prev) => {
-            // 1. Check if the message is already present by exact database message ID
+            // Check if message is already present
             const existingIndex = prev.findIndex(m => m.id === newMsg.id);
             if (existingIndex !== -1) {
               const updated = [...prev];
@@ -160,7 +191,7 @@ export function ChatProvider({ children }) {
               return updated;
             }
 
-            // 2. Check if this resolves an optimistic message (by client temp ID or content matching)
+            // Check if this resolves an optimistic message
             const clientTempId = newMsg.metadata?.client_temp_id;
             const tempIndex = prev.findIndex(m => {
               if (clientTempId && (m.id === clientTempId || m.metadata?.client_temp_id === clientTempId)) {
@@ -185,11 +216,9 @@ export function ChatProvider({ children }) {
               return sortChronologically(updated);
             }
 
-            // 3. Otherwise, append new message and sort chronologically
             return sortChronologically([...prev, newMsg]);
           });
 
-          // If message is from partner: immediately clear partner typing and mark read
           if (newMsg.sender_id !== user.id) {
             if (partnerTypingTimerRef.current) {
               clearTimeout(partnerTypingTimerRef.current);
@@ -200,14 +229,16 @@ export function ChatProvider({ children }) {
           }
         }
       )
-      // Listen to real-time message updates (e.g. edits, soft deletes)
+      // Listen to real-time message updates
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'messages' },
-        (payload) => {
-          const updated = payload.new;
-          if (!updated || !updated.id) return;
-          if (updated.chat_id && updated.chat_id !== chatId) return;
+        async (payload) => {
+          const rawUpdated = payload.new;
+          if (!rawUpdated || !rawUpdated.id) return;
+          if (rawUpdated.chat_id && rawUpdated.chat_id !== chatId) return;
+
+          const updated = await decryptMessageRecord(rawUpdated, conversationKeyRef.current);
 
           setMessages(prev => prev.map(m => {
             if (m.id === updated.id) {
@@ -271,17 +302,13 @@ export function ChatProvider({ children }) {
           setReadStates(reads);
         }
       )
-      // Presence tracking (Partner Online Status)
+      // Presence tracking
       .on('presence', { event: 'sync' }, () => {
         const state = channel.presenceState();
         let otherUserOnline = false;
-
         Object.keys(state).forEach(key => {
-          if (key !== user.id) {
-            otherUserOnline = true;
-          }
+          if (key !== user.id) otherUserOnline = true;
         });
-
         setPartnerOnline(otherUserOnline);
       })
       .on('presence', { event: 'join' }, ({ key }) => {
@@ -299,13 +326,9 @@ export function ChatProvider({ children }) {
       })
       .subscribe((status, err) => {
         if (status === 'SUBSCRIBED') {
-          channel.track({
-            online_at: new Date().toISOString()
-          }).catch(() => {});
+          channel.track({ online_at: new Date().toISOString() }).catch(() => {});
         } else if (status === 'CHANNEL_ERROR') {
           console.error('[Realtime] Subscription error on sanctuary channel:', err);
-        } else if (status === 'TIMED_OUT') {
-          console.warn('[Realtime] Subscription timed out on sanctuary channel');
         }
       });
 
@@ -319,7 +342,6 @@ export function ChatProvider({ children }) {
         partnerTypingTimerRef.current = null;
       }
       if (channel) {
-        // Broadcast stopped typing before removing channel
         channel.send({
           type: 'broadcast',
           event: 'typing',
@@ -327,6 +349,7 @@ export function ChatProvider({ children }) {
         }).catch(() => {});
         supabase.removeChannel(channel);
       }
+      revokeAllDecryptedBlobUrls();
     };
   }, [user, isAuthorized, chatId, profile, partnerProfile]);
 
@@ -337,14 +360,14 @@ export function ChatProvider({ children }) {
       try {
         const latest = await fetchMessages(chatId, 30);
         if (latest.length > 0) {
+          const decryptedLatest = await Promise.all(
+            latest.map(m => decryptMessageRecord(m, conversationKeyRef.current))
+          );
           setMessages(prev => {
             const map = new Map();
-            // Retain pending optimistic messages
             prev.filter(m => m.id?.toString().startsWith('temp_')).forEach(m => map.set(m.id, m));
-            // Keep existing confirmed messages
             prev.forEach(m => map.set(m.id, m));
-            // Merge in latest messages from server
-            latest.forEach(m => map.set(m.id, { ...map.get(m.id), ...m }));
+            decryptedLatest.forEach(m => map.set(m.id, { ...map.get(m.id), ...m }));
             return sortChronologically(Array.from(map.values()));
           });
         }
@@ -357,7 +380,7 @@ export function ChatProvider({ children }) {
     return () => window.removeEventListener('online', handleReconnected);
   }, [chatId, user, isAuthorized]);
 
-  // Broadcast typing status with throttling and automatic 2-second timeout
+  // Broadcast typing status with throttling
   const broadcastTyping = useCallback((isTyping) => {
     if (!channelRef.current || !user) return;
 
@@ -369,7 +392,6 @@ export function ChatProvider({ children }) {
     const now = Date.now();
 
     if (!isTyping) {
-      // User explicitly stopped typing, cleared input, or sent a message
       if (isTypingActiveRef.current) {
         isTypingActiveRef.current = false;
         lastTypingSentRef.current = 0;
@@ -382,7 +404,6 @@ export function ChatProvider({ children }) {
       return;
     }
 
-    // User is actively typing: throttle transmissions so we don't spam the network on every single keystroke
     if (!isTypingActiveRef.current || now - lastTypingSentRef.current > 1500) {
       isTypingActiveRef.current = true;
       lastTypingSentRef.current = now;
@@ -393,7 +414,6 @@ export function ChatProvider({ children }) {
       }).catch(() => {});
     }
 
-    // Inactivity timeout: automatically broadcast false after ~2 seconds of silence
     typingTimeoutRef.current = setTimeout(() => {
       isTypingActiveRef.current = false;
       lastTypingSentRef.current = 0;
@@ -416,7 +436,10 @@ export function ChatProvider({ children }) {
         setHasMoreMessages(false);
       }
       if (older.length > 0) {
-        setMessages(prev => sortChronologically([...older, ...prev]));
+        const decryptedOlder = await Promise.all(
+          older.map(m => decryptMessageRecord(m, conversationKeyRef.current))
+        );
+        setMessages(prev => sortChronologically([...decryptedOlder, ...prev]));
         const olderRx = await fetchReactionsForMessages(older.map(m => m.id));
         setReactions(prev => ({ ...prev, ...olderRx }));
       }
@@ -425,15 +448,33 @@ export function ChatProvider({ children }) {
     }
   };
 
-  // Send a regular text message (Optimistic update)
+  // ---------------------------------------------------------------------------
+  // Send End-to-End Encrypted Text Message
+  // ---------------------------------------------------------------------------
   const sendTextMessage = async (text, replyTo = null) => {
     if (!text || !text.trim() || !user) return;
-
-    // Immediately stop typing indicator
     broadcastTyping(false);
+
+    // CRITICAL SECURITY GUARD: Never send plaintext as fallback
+    if (!conversationKey || cryptoState !== 'ready') {
+      if (cryptoState === 'locked') setUnlockModalOpen(true);
+      else if (cryptoState === 'uninitialized') setSetupModalOpen(true);
+      throw new Error('E2EE key is unavailable. Plaintext message transmission is strictly blocked.');
+    }
 
     const trimmed = text.trim();
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+    // Build sensitive payload (text + reply quote)
+    const payload = {
+      text: trimmed,
+      reply_to: replyTo ? { sender_name: replyTo.sender_name, content: replyTo.content } : null
+    };
+
+    // Encrypt payload before anything leaves the client
+    const ciphertext = await encryptMessage(payload, conversationKey, 'epoch_1');
+
+    // Optimistic message: Plaintext kept in local memory only for the sender
     const optimisticMsg = {
       id: tempId,
       chat_id: chatId,
@@ -445,6 +486,7 @@ export function ChatProvider({ children }) {
         client_temp_id: tempId
       },
       is_deleted: false,
+      is_encrypted: true,
       status: 'sending',
       created_at: new Date().toISOString(),
       profiles: profile
@@ -453,24 +495,32 @@ export function ChatProvider({ children }) {
     setMessages(prev => sortChronologically([...prev, optimisticMsg]));
 
     try {
+      // Send only ciphertext to database.
+      // Notice: reply_to snippet is omitted from metadata to prevent leaks in DB!
       const sentMsg = await sendMessage({
         chatId,
         senderId: user.id,
-        content: trimmed,
+        content: ciphertext,
         type: 'text',
         metadata: {
-          ...(replyTo ? { reply_to: replyTo } : {}),
           client_temp_id: tempId
         }
       });
 
       setMessages(prev => {
-        // If the real message already arrived via Realtime, remove the optimistic temp message
         if (prev.some(m => m.id === sentMsg.id)) {
           return prev.filter(m => m.id !== tempId);
         }
-        // Otherwise replace tempId with sentMsg
-        return sortChronologically(prev.map(m => m.id === tempId ? { ...sentMsg, profiles: sentMsg.profiles || profile } : m));
+        return sortChronologically(prev.map(m => m.id === tempId ? {
+          ...sentMsg,
+          content: trimmed, // Retain readable text in local state
+          metadata: {
+            ...(replyTo ? { reply_to: replyTo } : {}),
+            ...sentMsg.metadata
+          },
+          is_encrypted: true,
+          profiles: sentMsg.profiles || profile
+        } : m));
       });
     } catch (err) {
       console.error('Send message failed:', err);
@@ -479,15 +529,26 @@ export function ChatProvider({ children }) {
     }
   };
 
-  // Send a private photo message
+  // ---------------------------------------------------------------------------
+  // Send End-to-End Encrypted Photo Message
+  // ---------------------------------------------------------------------------
   const sendPhotoMessage = async (file, caption = '') => {
     if (!file || !user) return;
     broadcastTyping(false);
+
+    // CRITICAL SECURITY GUARD: Never upload plaintext as fallback
+    if (!conversationKey || cryptoState !== 'ready') {
+      if (cryptoState === 'locked') setUnlockModalOpen(true);
+      else if (cryptoState === 'uninitialized') setSetupModalOpen(true);
+      throw new Error('E2EE key is unavailable. Plaintext photo upload is strictly blocked.');
+    }
+
     setUploadingPhoto(true);
     setUploadError(null);
 
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const localPreviewUrl = URL.createObjectURL(file);
+
     const optimisticMsg = {
       id: tempId,
       chat_id: chatId,
@@ -500,6 +561,7 @@ export function ChatProvider({ children }) {
         client_temp_id: tempId
       },
       is_deleted: false,
+      is_encrypted: true,
       status: 'sending',
       created_at: new Date().toISOString(),
       profiles: profile
@@ -508,17 +570,24 @@ export function ChatProvider({ children }) {
     setMessages(prev => sortChronologically([...prev, optimisticMsg]));
 
     try {
-      // Upload to private bucket
-      const { path, signedUrl } = await uploadChatPhoto(file, chatId, user.id);
+      // 1. Encrypt and upload image bytes to private bucket (ciphertext only)
+      const { path } = await uploadEncryptedChatPhoto(file, chatId, user.id, conversationKey);
 
+      // 2. Encrypt caption and path inside message payload
+      const photoPayload = {
+        caption: caption || '',
+        photo_path: path
+      };
+      const ciphertext = await encryptMessage(photoPayload, conversationKey, 'epoch_1');
+
+      // 3. Send ciphertext message record
       const msg = await sendMessage({
         chatId,
         senderId: user.id,
-        content: caption || '',
+        content: ciphertext,
         type: 'image',
         metadata: {
           photo_path: path,
-          signed_url: signedUrl,
           client_temp_id: tempId
         }
       });
@@ -527,12 +596,22 @@ export function ChatProvider({ children }) {
         if (prev.some(m => m.id === msg.id)) {
           return prev.filter(m => m.id !== tempId);
         }
-        return sortChronologically(prev.map(m => m.id === tempId ? { ...msg, profiles: msg.profiles || profile } : m));
+        return sortChronologically(prev.map(m => m.id === tempId ? {
+          ...msg,
+          content: caption || '',
+          metadata: {
+            photo_path: path,
+            signed_url: localPreviewUrl,
+            client_temp_id: tempId
+          },
+          is_encrypted: true,
+          profiles: msg.profiles || profile
+        } : m));
       });
       return msg;
     } catch (err) {
       console.error('Photo message failed:', err);
-      setUploadError(err.message || 'Failed to upload photo.');
+      setUploadError(err.message || 'Failed to upload encrypted photo.');
       setMessages(prev => prev.filter(m => m.id !== tempId));
       throw err;
     } finally {
@@ -540,27 +619,46 @@ export function ChatProvider({ children }) {
     }
   };
 
-  // Send a virtual gift card message
+  // ---------------------------------------------------------------------------
+  // Send End-to-End Encrypted Virtual Gift Message
+  // ---------------------------------------------------------------------------
   const sendGiftMessage = async (gift) => {
     if (!gift || !user) return;
     broadcastTyping(false);
+
+    if (!conversationKey || cryptoState !== 'ready') {
+      if (cryptoState === 'locked') setUnlockModalOpen(true);
+      else if (cryptoState === 'uninitialized') setSetupModalOpen(true);
+      throw new Error('E2EE key is unavailable. Plaintext message transmission is strictly blocked.');
+    }
+
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const giftMetadata = {
       gift_id: gift.id,
       title: gift.title,
       emoji: gift.emoji,
       message: gift.message,
-      color: gift.color,
-      client_temp_id: tempId
+      color: gift.color
     };
+
+    const payload = {
+      gift: giftMetadata,
+      text: gift.title
+    };
+    const ciphertext = await encryptMessage(payload, conversationKey, 'epoch_1');
+
     const optimisticMsg = {
       id: tempId,
       chat_id: chatId,
       sender_id: user.id,
       content: gift.title,
       type: 'gift',
-      metadata: giftMetadata,
+      metadata: {
+        ...giftMetadata,
+        client_temp_id: tempId
+      },
       is_deleted: false,
+      is_encrypted: true,
       status: 'sending',
       created_at: new Date().toISOString(),
       profiles: profile
@@ -572,16 +670,28 @@ export function ChatProvider({ children }) {
       const msg = await sendMessage({
         chatId,
         senderId: user.id,
-        content: gift.title,
+        content: ciphertext,
         type: 'gift',
-        metadata: giftMetadata
+        metadata: {
+          gift_id: gift.id,
+          client_temp_id: tempId
+        }
       });
 
       setMessages(prev => {
         if (prev.some(m => m.id === msg.id)) {
           return prev.filter(m => m.id !== tempId);
         }
-        return sortChronologically(prev.map(m => m.id === tempId ? { ...msg, profiles: msg.profiles || profile } : m));
+        return sortChronologically(prev.map(m => m.id === tempId ? {
+          ...msg,
+          content: gift.title,
+          metadata: {
+            ...giftMetadata,
+            client_temp_id: tempId
+          },
+          is_encrypted: true,
+          profiles: msg.profiles || profile
+        } : m));
       });
       return msg;
     } catch (err) {
@@ -591,25 +701,44 @@ export function ChatProvider({ children }) {
     }
   };
 
-  // Send a built-in expressive sticker
+  // ---------------------------------------------------------------------------
+  // Send End-to-End Encrypted Sticker Message
+  // ---------------------------------------------------------------------------
   const sendStickerMessage = async (sticker) => {
     if (!sticker || !user) return;
     broadcastTyping(false);
+
+    if (!conversationKey || cryptoState !== 'ready') {
+      if (cryptoState === 'locked') setUnlockModalOpen(true);
+      else if (cryptoState === 'uninitialized') setSetupModalOpen(true);
+      throw new Error('E2EE key is unavailable. Plaintext message transmission is strictly blocked.');
+    }
+
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const stickerMetadata = {
       sticker_id: sticker.id,
       emoji: sticker.emoji,
-      label: sticker.label,
-      client_temp_id: tempId
+      label: sticker.label
     };
+
+    const payload = {
+      sticker: stickerMetadata,
+      text: sticker.label
+    };
+    const ciphertext = await encryptMessage(payload, conversationKey, 'epoch_1');
+
     const optimisticMsg = {
       id: tempId,
       chat_id: chatId,
       sender_id: user.id,
       content: sticker.label,
       type: 'sticker',
-      metadata: stickerMetadata,
+      metadata: {
+        ...stickerMetadata,
+        client_temp_id: tempId
+      },
       is_deleted: false,
+      is_encrypted: true,
       status: 'sending',
       created_at: new Date().toISOString(),
       profiles: profile
@@ -621,16 +750,28 @@ export function ChatProvider({ children }) {
       const msg = await sendMessage({
         chatId,
         senderId: user.id,
-        content: sticker.label,
+        content: ciphertext,
         type: 'sticker',
-        metadata: stickerMetadata
+        metadata: {
+          sticker_id: sticker.id,
+          client_temp_id: tempId
+        }
       });
 
       setMessages(prev => {
         if (prev.some(m => m.id === msg.id)) {
           return prev.filter(m => m.id !== tempId);
         }
-        return sortChronologically(prev.map(m => m.id === tempId ? { ...msg, profiles: msg.profiles || profile } : m));
+        return sortChronologically(prev.map(m => m.id === tempId ? {
+          ...msg,
+          content: sticker.label,
+          metadata: {
+            ...stickerMetadata,
+            client_temp_id: tempId
+          },
+          is_encrypted: true,
+          profiles: msg.profiles || profile
+        } : m));
       });
       return msg;
     } catch (err) {
@@ -648,7 +789,8 @@ export function ChatProvider({ children }) {
     } catch (err) {
       console.error('Delete message error:', err);
       const msgs = await fetchMessages(chatId, 50);
-      setMessages(sortChronologically(msgs));
+      const decrypted = await Promise.all(msgs.map(m => decryptMessageRecord(m, conversationKeyRef.current)));
+      setMessages(sortChronologically(decrypted));
       throw err;
     }
   };

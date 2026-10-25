@@ -1,10 +1,123 @@
-import React, { useState } from 'react';
-import { Check, CheckCheck, Clock, AlertCircle, Copy, Reply, Trash2, Bookmark, Heart, Smile } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Check, CheckCheck, Clock, AlertCircle, Copy, Reply, Trash2, Bookmark, Heart, Smile, Lock, ShieldAlert } from 'lucide-react';
 import Avatar from '../common/Avatar';
 import { formatMessageTime } from '../../utils/dates';
 import { saveToMemories } from '../../services/memories';
+import { useCrypto } from '../../context/CryptoContext';
+import { downloadAndDecryptChatPhoto } from '../../services/storage';
 
 const QUICK_EMOJIS = ['❤️', '😂', '🥺', '🔥', '👏', '🎉'];
+
+function EncryptedChatImage({ photoPath, initialUrl, onOpenImage }) {
+  const { conversationKey } = useCrypto();
+  const [imageUrl, setImageUrl] = useState(initialUrl || '');
+  const [loading, setLoading] = useState(!initialUrl && Boolean(photoPath));
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    if (initialUrl) {
+      setImageUrl(initialUrl);
+      setLoading(false);
+      return;
+    }
+
+    if (!photoPath) return;
+
+    setLoading(true);
+    setError(false);
+
+    downloadAndDecryptChatPhoto(photoPath, conversationKey)
+      .then(url => {
+        if (isMounted) {
+          setImageUrl(url);
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setError(true);
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [photoPath, initialUrl, conversationKey]);
+
+  if (loading) {
+    return (
+      <div
+        style={{
+          width: '240px',
+          height: '180px',
+          borderRadius: '14px',
+          backgroundColor: 'rgba(0,0,0,0.25)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '8px',
+          color: 'var(--text-muted)',
+          fontSize: '12px'
+        }}
+      >
+        <Lock size={20} className="animate-spin" color="var(--accent-primary)" />
+        <span>Decrypting photo...</span>
+      </div>
+    );
+  }
+
+  if (error || !imageUrl) {
+    return (
+      <div
+        style={{
+          padding: '16px',
+          borderRadius: '14px',
+          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+          color: '#f87171',
+          fontSize: '12px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px'
+        }}
+      >
+        <ShieldAlert size={16} />
+        <span>🔒 Unable to decrypt photo</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpenImage(imageUrl);
+      }}
+      style={{
+        borderRadius: '14px',
+        overflow: 'hidden',
+        maxHeight: '260px',
+        cursor: 'zoom-in',
+        backgroundColor: 'rgba(0,0,0,0.2)'
+      }}
+    >
+      <img
+        src={imageUrl}
+        alt="Sanctuary Photo"
+        style={{
+          width: '100%',
+          height: 'auto',
+          maxHeight: '260px',
+          objectFit: 'cover',
+          display: 'block'
+        }}
+        loading="lazy"
+      />
+    </div>
+  );
+}
 
 export default function ChatBubble({
   message,
@@ -142,35 +255,19 @@ export default function ChatBubble({
             <span style={{ fontStyle: 'italic', color: 'var(--text-muted)', fontSize: '13px' }}>
               🚫 {message.content}
             </span>
+          ) : message.is_decrypt_error ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#f87171', fontSize: '13px', padding: '2px 0' }}>
+              <ShieldAlert size={16} />
+              <span>{message.content || '🔒 Unable to decrypt message'}</span>
+            </div>
           ) : isImage ? (
             /* Image Bubble */
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (metadata.signed_url) onOpenImage(metadata.signed_url);
-                }}
-                style={{
-                  borderRadius: '14px',
-                  overflow: 'hidden',
-                  maxHeight: '260px',
-                  cursor: 'zoom-in',
-                  backgroundColor: 'rgba(0,0,0,0.2)'
-                }}
-              >
-                <img
-                  src={metadata.signed_url || ''}
-                  alt="Private Sanctuary Photo"
-                  style={{
-                    width: '100%',
-                    height: 'auto',
-                    maxHeight: '260px',
-                    objectFit: 'cover',
-                    display: 'block'
-                  }}
-                  loading="lazy"
-                />
-              </div>
+              <EncryptedChatImage
+                photoPath={metadata.photo_path}
+                initialUrl={metadata.signed_url}
+                onOpenImage={onOpenImage}
+              />
               {message.content && <div>{message.content}</div>}
             </div>
           ) : isGift ? (
@@ -230,6 +327,22 @@ export default function ChatBubble({
               opacity: 0.75
             }}
           >
+            {message.is_legacy_unencrypted && (
+              <span
+                title="This is an unencrypted legacy message sent before E2EE was enabled"
+                style={{
+                  fontSize: '9.5px',
+                  opacity: 0.8,
+                  padding: '1px 4px',
+                  borderRadius: '4px',
+                  backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                  color: isSender ? 'inherit' : '#fca5a5',
+                  marginRight: '2px'
+                }}
+              >
+                unencrypted
+              </span>
+            )}
             <span>{formatMessageTime(message.created_at)}</span>
             {isSender && (
               <span>

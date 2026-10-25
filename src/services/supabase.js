@@ -1,7 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : (typeof process !== 'undefined' && process.env ? process.env : {});
+const supabaseUrl = env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY || '';
 
 export const isSupabaseConfigured = () => {
   return (
@@ -17,6 +18,18 @@ export const isSupabaseConfigured = () => {
 // Initialize the Supabase Client
 // CRITICAL SECURITY NOTE: Only the public anon key is initialized here.
 // Row Level Security (RLS) policies on the PostgreSQL database enforce all access control.
+const realtimeConfig = typeof WebSocket !== 'undefined'
+  ? { params: { eventsPerSecond: 10 } }
+  : {
+      transport: class DummyWebSocket {
+        constructor() {}
+        addEventListener() {}
+        removeEventListener() {}
+        send() {}
+        close() {}
+      }
+    };
+
 export const supabase = createClient(
   supabaseUrl || 'https://placeholder.supabase.co',
   supabaseAnonKey || 'placeholder-anon-key',
@@ -27,10 +40,6 @@ export const supabase = createClient(
       detectSessionInUrl: true,
       storageKey: 'the-saviour-auth'
     },
-    realtime: {
-      params: {
-        eventsPerSecond: 10
-      }
-    }
+    realtime: realtimeConfig
   }
 );

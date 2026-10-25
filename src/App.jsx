@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { CryptoProvider, useCrypto } from './context/CryptoContext';
 import { ChatProvider } from './context/ChatContext';
 import Header from './components/layout/Header';
 import BottomNav from './components/layout/BottomNav';
@@ -13,11 +14,24 @@ import Settings from './pages/Settings';
 import MoodModal from './components/mood/MoodModal';
 import StartupScreen from './components/startup/StartupScreen';
 import SaviourLogo from './components/common/SaviourLogo';
+import E2EESetupModal from './components/crypto/E2EESetupModal';
+import E2EEUnlockModal from './components/crypto/E2EEUnlockModal';
+import SafetyNumberModal from './components/crypto/SafetyNumberModal';
+import KeyMismatchBanner from './components/crypto/KeyMismatchBanner';
 import { getLatestMoods } from './services/moods';
 import { Shield, WifiOff } from 'lucide-react';
 
 function AppContent() {
   const { user, isAuthorized, loading, partnerProfile } = useAuth();
+  const {
+    setupModalOpen,
+    setSetupModalOpen,
+    unlockModalOpen,
+    setUnlockModalOpen,
+    safetyModalOpen,
+    setSafetyModalOpen
+  } = useCrypto();
+
   const [activeTab, setActiveTab] = useState('chat');
   const [theme, setTheme] = useState('dark');
   const [isSearching, setIsSearching] = useState(false);
@@ -147,6 +161,9 @@ function AppContent() {
           </div>
         )}
 
+        {/* Anti-Key Substitution Security Banner */}
+        <KeyMismatchBanner />
+
         {/* Global App Header */}
         <Header
           activeTab={activeTab}
@@ -188,6 +205,20 @@ function AppContent() {
           onClose={() => setShowMoodModal(false)}
           onMoodUpdated={loadPartnerMood}
         />
+
+        {/* End-to-End Encryption Modals */}
+        <E2EESetupModal
+          isOpen={setupModalOpen}
+          onClose={() => setSetupModalOpen(false)}
+        />
+        <E2EEUnlockModal
+          isOpen={unlockModalOpen}
+          onClose={() => setUnlockModalOpen(false)}
+        />
+        <SafetyNumberModal
+          isOpen={safetyModalOpen}
+          onClose={() => setSafetyModalOpen(false)}
+        />
       </div>
     </ChatProvider>
   );
@@ -201,7 +232,9 @@ export default function App() {
       {!startupDismissed && (
         <StartupScreen onDismiss={() => setStartupDismissed(true)} />
       )}
-      <AppContent />
+      <CryptoProvider>
+        <AppContent />
+      </CryptoProvider>
     </AuthProvider>
   );
 }
