@@ -9,7 +9,7 @@ import StickersModal from '../components/chat/StickersModal';
 import AttachmentModal from '../components/chat/AttachmentModal';
 import ImageLightbox from '../components/chat/ImageLightbox';
 import LoadingSkeleton from '../components/common/LoadingSkeleton';
-import { Heart, Search, X, Shield, Sparkles } from 'lucide-react';
+import { Heart, Search, X, Shield, ShieldAlert, Sparkles } from 'lucide-react';
 
 export default function Chat({ isSearching, onToggleSearch }) {
   const { user } = useAuth();
@@ -23,6 +23,7 @@ export default function Chat({ isSearching, onToggleSearch }) {
     loadMoreMessages,
     toggleReaction,
     deleteMsg,
+    clearUnreadableMessages,
     markChatRead
   } = useChat();
 
@@ -113,6 +114,9 @@ export default function Chat({ isSearching, onToggleSearch }) {
     ? messages.filter(m => (m.content || '').toLowerCase().includes(searchQuery.toLowerCase().trim()))
     : messages;
 
+  // Count unreadable messages from previous sessions
+  const unreadableCount = messages.filter(m => m.is_decrypt_error).length;
+
   return (
     <div className="chat-container">
       {/* Search Header Bar */}
@@ -162,6 +166,49 @@ export default function Chat({ isSearching, onToggleSearch }) {
         onScroll={handleScroll}
         className="messages-scrollable"
       >
+        {/* Banner for messages encrypted in previous sessions */}
+        {unreadableCount > 0 && (
+          <div
+            className="animate-fade-in"
+            style={{
+              margin: '10px 14px',
+              padding: '10px 14px',
+              borderRadius: '12px',
+              backgroundColor: 'rgba(239, 68, 68, 0.12)',
+              border: '1px solid rgba(239, 68, 68, 0.25)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '10px',
+              fontSize: '12px',
+              color: '#fca5a5'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <ShieldAlert size={16} color="#f87171" style={{ flexShrink: 0 }} />
+              <span>
+                {unreadableCount} message{unreadableCount > 1 ? 's were' : ' was'} encrypted in a previous session.
+              </span>
+            </div>
+            <button
+              onClick={clearUnreadableMessages}
+              style={{
+                background: 'rgba(239, 68, 68, 0.25)',
+                border: '1px solid rgba(239, 68, 68, 0.4)',
+                borderRadius: '8px',
+                color: '#fff',
+                cursor: 'pointer',
+                padding: '4px 10px',
+                fontSize: '11px',
+                fontWeight: 600,
+                whiteSpace: 'nowrap'
+              }}
+            >
+              Clear Old
+            </button>
+          </div>
+        )}
+
         {loadingMessages ? (
           <LoadingSkeleton count={6} />
         ) : filteredMessages.length === 0 ? (

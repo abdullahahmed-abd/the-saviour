@@ -256,9 +256,44 @@ export default function ChatBubble({
               🚫 {message.content}
             </span>
           ) : message.is_decrypt_error ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#f87171', fontSize: '13px', padding: '2px 0' }}>
-              <ShieldAlert size={16} />
-              <span>{message.content || '🔒 Unable to decrypt message'}</span>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '8px',
+                color: '#f87171',
+                fontSize: '12px',
+                padding: '2px 0'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <ShieldAlert size={15} />
+                <span>Encrypted in previous session</span>
+              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(message.id);
+                }}
+                title="Dismiss unreadable message"
+                style={{
+                  background: 'rgba(239, 68, 68, 0.15)',
+                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  borderRadius: '6px',
+                  color: '#fca5a5',
+                  cursor: 'pointer',
+                  padding: '2px 6px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '3px',
+                  fontSize: '11px',
+                  fontWeight: 500
+                }}
+              >
+                <Trash2 size={11} />
+                <span>Dismiss</span>
+              </button>
             </div>
           ) : isImage ? (
             /* Image Bubble */
@@ -481,8 +516,8 @@ export default function ChatBubble({
             </button>
           )}
 
-          {/* Delete (if sender) */}
-          {isSender && !isDeleted && (
+          {/* Delete (if sender or unreadable error) */}
+          {(isSender || message.is_decrypt_error) && !isDeleted && (
             <button
               onClick={() => {
                 onDelete(message.id);

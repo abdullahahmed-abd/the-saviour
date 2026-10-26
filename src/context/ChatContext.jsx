@@ -15,6 +15,7 @@ import {
 } from '../services/messages';
 import { uploadEncryptedChatPhoto, revokeAllDecryptedBlobUrls } from '../services/storage';
 import { encryptMessage, isEncryptedMessage } from '../services/crypto';
+import { getAllConversationKeys } from '../services/keystore';
 
 const ChatContext = createContext(null);
 
@@ -66,9 +67,19 @@ export function ChatProvider({ children }) {
         const msgs = await fetchMessages(chatId, 50);
         if (!isMounted) return;
 
+        let candidateKeys = [];
+        try {
+          const stored = await getAllConversationKeys(chatId);
+          candidateKeys = stored.map(r => r.key);
+        } catch (e) {
+          console.warn('Could not load historical conversation keys:', e);
+        }
+
+        const activeKey = conversationKeyRef.current;
+
         // Decrypt messages locally before storing in React state
         const decrypted = await Promise.all(
-          msgs.map(m => decryptMessageRecord(m, conversationKeyRef.current))
+          msgs.map(m => decryptMessageRecord(m, activeKey, candidateKeys))
         );
 
         setMessages(sortChronologically(decrypted));
@@ -104,22 +115,44 @@ export function ChatProvider({ children }) {
     };
   }, [user, isAuthorized, chatId]);
 
-  // 2. Re-decrypt in-memory messages whenever conversationKey becomes available (e.g. after unlock)
+  // 2. Re-decrypt in-memory messages whenever conversationKey becomes available (e.g. after unlock / accept)
   useEffect(() => {
     if (!conversationKey) return;
 
-    setMessages(prev => {
-      const needsDecryption = prev.some(
-        m => isEncryptedMessage(m.content) || m.is_decrypt_error || m.raw_ciphertext
-      );
-      if (!needsDecryption) return prev;
+    let isMounted = true;
+    (async () => {
+      let candidateKeys = [];
+      try {
+        const stored = await getAllConversationKeys(chatId);
+        candidateKeys = stored.map(r => r.key);
+      } catch (e) {
+        console.warn('Could not load candidate keys for re-decryption:', e);
+      }
 
-      Promise.all(prev.map(m => decryptMessageRecord(m, conversationKey))).then(updated => {
-        setMessages(sortChronologically(updated));
+      setMessages(prev => {
+        const hasUnreadable = prev.some(
+          m => m.is_decrypt_error || isEncryptedMessage(m.content)
+        );
+        if (!hasUnreadable) return prev;
+
+        Promise.all(
+          prev.map(m => {
+            if (m.is_decrypt_error || isEncryptedMessage(m.content)) {
+              return decryptMessageRecord(m, conversationKey, candidateKeys);
+            }
+            return m;
+          })
+        ).then(updated => {
+          if (isMounted) setMessages(sortChronologically(updated));
+        });
+        return prev;
       });
-      return prev;
-    });
-  }, [conversationKey]);
+    })();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [conversationKey, chatId]);
 
   // 3. Realtime Subscriptions (Postgres changes, Presence & Low-Latency Broadcast)
   useEffect(() => {
@@ -164,8 +197,14 @@ export function ChatProvider({ children }) {
           if (!rawMsg || !rawMsg.id) return;
           if (rawMsg.chat_id && rawMsg.chat_id !== chatId) return;
 
+          let candidateKeys = [];
+          try {
+            const stored = await getAllConversationKeys(chatId);
+            candidateKeys = stored.map(r => r.key);
+          } catch {}
+
           // Decrypt incoming message immediately
-          const newMsg = await decryptMessageRecord(rawMsg, conversationKeyRef.current);
+          const newMsg = await decryptMessageRecord(rawMsg, conversationKeyRef.current, candidateKeys);
 
           const senderProfile = (newMsg.sender_id === user?.id)
             ? profile
@@ -182,9 +221,18 @@ export function ChatProvider({ children }) {
             const existingIndex = prev.findIndex(m => m.id === newMsg.id);
             if (existingIndex !== -1) {
               const updated = [...prev];
+              const prevMsg = updated[existingIndex];
+              const keepPrevContent =
+                prevMsg.content &&
+                !prevMsg.is_decrypt_error &&
+                !isEncryptedMessage(prevMsg.content) &&
+                newMsg.is_decrypt_error;
+
               updated[existingIndex] = {
                 ...updated[existingIndex],
                 ...newMsg,
+                content: keepPrevContent ? prevMsg.content : newMsg.content,
+                is_decrypt_error: keepPrevContent ? false : newMsg.is_decrypt_error,
                 profiles: newMsg.profiles || updated[existingIndex].profiles,
                 status: 'sent'
               };
@@ -200,16 +248,19 @@ export function ChatProvider({ children }) {
               return (
                 m.id?.toString().startsWith('temp_') &&
                 m.sender_id === newMsg.sender_id &&
-                m.content === newMsg.content &&
+                (m.content === newMsg.content || newMsg.is_decrypt_error) &&
                 m.type === newMsg.type
               );
             });
 
             if (tempIndex !== -1) {
+              const prevTemp = prev[tempIndex];
               const updated = [...prev];
               updated[tempIndex] = {
                 ...updated[tempIndex],
                 ...newMsg,
+                content: newMsg.is_decrypt_error && prevTemp.content ? prevTemp.content : newMsg.content,
+                is_decrypt_error: newMsg.is_decrypt_error && !prevTemp.content ? true : false,
                 profiles: newMsg.profiles || updated[tempIndex].profiles,
                 status: 'sent'
               };
@@ -436,8 +487,14 @@ export function ChatProvider({ children }) {
         setHasMoreMessages(false);
       }
       if (older.length > 0) {
+        let candidateKeys = [];
+        try {
+          const stored = await getAllConversationKeys(chatId);
+          candidateKeys = stored.map(r => r.key);
+        } catch {}
+
         const decryptedOlder = await Promise.all(
-          older.map(m => decryptMessageRecord(m, conversationKeyRef.current))
+          older.map(m => decryptMessageRecord(m, conversationKeyRef.current, candidateKeys))
         );
         setMessages(prev => sortChronologically([...decryptedOlder, ...prev]));
         const olderRx = await fetchReactionsForMessages(older.map(m => m.id));
@@ -508,10 +565,16 @@ export function ChatProvider({ children }) {
       });
 
       setMessages(prev => {
-        if (prev.some(m => m.id === sentMsg.id)) {
-          return prev.filter(m => m.id !== tempId);
+        const withoutTemp = prev.filter(m => m.id !== tempId);
+        if (withoutTemp.some(m => m.id === sentMsg.id)) {
+          return sortChronologically(withoutTemp.map(m => m.id === sentMsg.id ? {
+            ...m,
+            content: trimmed,
+            is_encrypted: true,
+            is_decrypt_error: false
+          } : m));
         }
-        return sortChronologically(prev.map(m => m.id === tempId ? {
+        return sortChronologically([...withoutTemp, {
           ...sentMsg,
           content: trimmed, // Retain readable text in local state
           metadata: {
@@ -519,8 +582,9 @@ export function ChatProvider({ children }) {
             ...sentMsg.metadata
           },
           is_encrypted: true,
+          is_decrypt_error: false,
           profiles: sentMsg.profiles || profile
-        } : m));
+        }]);
       });
     } catch (err) {
       console.error('Send message failed:', err);
@@ -781,17 +845,45 @@ export function ChatProvider({ children }) {
     }
   };
 
-  // Soft delete own message
+  // Soft delete own message or dismiss unreadable session message
   const deleteMsg = async (messageId) => {
+    const target = messages.find(m => m.id === messageId);
+
+    // If it's an unreadable decrypt error message, remove from UI and attempt delete
+    if (target?.is_decrypt_error) {
+      setMessages(prev => prev.filter(m => m.id !== messageId));
+      try {
+        await deleteMessage(messageId, false);
+      } catch (e) {
+        // Ignored for partner-sent messages blocked by RLS
+      }
+      return;
+    }
+
     try {
       setMessages(prev => prev.map(m => m.id === messageId ? { ...m, is_deleted: true, content: 'This message was deleted' } : m));
       await deleteMessage(messageId, false);
     } catch (err) {
       console.error('Delete message error:', err);
-      const msgs = await fetchMessages(chatId, 50);
-      const decrypted = await Promise.all(msgs.map(m => decryptMessageRecord(m, conversationKeyRef.current)));
-      setMessages(sortChronologically(decrypted));
       throw err;
+    }
+  };
+
+  // Batch clear all unreadable messages from previous sessions
+  const clearUnreadableMessages = async () => {
+    const unreadable = messages.filter(m => m.is_decrypt_error);
+    if (unreadable.length === 0) return;
+
+    // Immediately remove from UI
+    setMessages(prev => prev.filter(m => !m.is_decrypt_error));
+
+    // Best-effort database deletion for own messages
+    for (const msg of unreadable) {
+      try {
+        await deleteMessage(msg.id, false);
+      } catch {
+        // Ignored
+      }
     }
   };
 
@@ -856,6 +948,7 @@ export function ChatProvider({ children }) {
     sendGiftMessage,
     sendStickerMessage,
     deleteMsg,
+    clearUnreadableMessages,
     toggleReaction,
     broadcastTyping,
     markChatRead: handleMarkChatRead

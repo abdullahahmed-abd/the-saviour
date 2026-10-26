@@ -4,7 +4,7 @@ import { isEncryptedMessage, decryptMessage } from './crypto.js';
 /**
  * Decrypt a single message record in memory
  */
-export async function decryptMessageRecord(messageRow, conversationKey) {
+export async function decryptMessageRecord(messageRow, conversationKey, candidateKeys = []) {
   if (!messageRow) return messageRow;
 
   // Preserve soft-deleted messages
@@ -14,6 +14,20 @@ export async function decryptMessageRecord(messageRow, conversationKey) {
       is_deleted: true,
       content: 'This message was deleted'
     };
+  }
+
+  // If already successfully decrypted, DO NOT overwrite or corrupt readable text!
+  const isAlreadyDecrypted =
+    messageRow.is_encrypted &&
+    !messageRow.is_decrypt_error &&
+    typeof messageRow.content === 'string' &&
+    !isEncryptedMessage(messageRow.content) &&
+    messageRow.content !== '🔒 Unable to decrypt message' &&
+    messageRow.content !== '🔒 Encrypted message (keys unavailable)' &&
+    messageRow.content !== '🔒 Encrypted in previous session';
+
+  if (isAlreadyDecrypted) {
+    return messageRow;
   }
 
   const cipherTextToDecrypt = messageRow.raw_ciphertext || messageRow.content;
@@ -26,8 +40,10 @@ export async function decryptMessageRecord(messageRow, conversationKey) {
     };
   }
 
-  // If conversationKey is unavailable
-  if (!conversationKey) {
+  // Gather all available candidate keys (current key + any historical epoch keys)
+  const keysToTry = [conversationKey, ...(Array.isArray(candidateKeys) ? candidateKeys : [])].filter(Boolean);
+
+  if (keysToTry.length === 0) {
     return {
       ...messageRow,
       is_encrypted: true,
@@ -37,51 +53,59 @@ export async function decryptMessageRecord(messageRow, conversationKey) {
     };
   }
 
-  try {
-    const { isEncrypted, epoch, payload } = await decryptMessage(cipherTextToDecrypt, conversationKey);
+  // Try candidate keys until one successfully decrypts
+  for (const key of keysToTry) {
+    try {
+      const { isEncrypted, epoch, payload } = await decryptMessage(cipherTextToDecrypt, key);
 
-    if (!isEncrypted) {
-      return {
-        ...messageRow,
-        is_legacy_unencrypted: true
-      };
-    }
+      if (!isEncrypted) {
+        return {
+          ...messageRow,
+          is_legacy_unencrypted: true
+        };
+      }
 
-    if (typeof payload === 'object' && payload !== null) {
-      const mergedMetadata = {
-        ...(messageRow.metadata || {}),
-        ...(payload.reply_to ? { reply_to: payload.reply_to } : {}),
-        ...(payload.gift ? payload.gift : {}),
-        ...(payload.sticker ? payload.sticker : {}),
-        ...(payload.photo_path ? { photo_path: payload.photo_path } : {})
-      };
+      if (typeof payload === 'object' && payload !== null) {
+        const mergedMetadata = {
+          ...(messageRow.metadata || {}),
+          ...(payload.reply_to ? { reply_to: payload.reply_to } : {}),
+          ...(payload.gift ? payload.gift : {}),
+          ...(payload.sticker ? payload.sticker : {}),
+          ...(payload.photo_path ? { photo_path: payload.photo_path } : {})
+        };
+
+        return {
+          ...messageRow,
+          is_encrypted: true,
+          is_decrypt_error: false,
+          epoch,
+          raw_ciphertext: cipherTextToDecrypt,
+          content: payload.text !== undefined ? payload.text : (payload.caption || ''),
+          metadata: mergedMetadata
+        };
+      }
 
       return {
         ...messageRow,
         is_encrypted: true,
+        is_decrypt_error: false,
         epoch,
         raw_ciphertext: cipherTextToDecrypt,
-        content: payload.text !== undefined ? payload.text : (payload.caption || ''),
-        metadata: mergedMetadata
+        content: payload
       };
+    } catch (err) {
+      // Key mismatch, continue to next candidate
     }
-
-    return {
-      ...messageRow,
-      is_encrypted: true,
-      epoch,
-      raw_ciphertext: cipherTextToDecrypt,
-      content: payload
-    };
-  } catch (err) {
-    return {
-      ...messageRow,
-      is_encrypted: true,
-      is_decrypt_error: true,
-      raw_ciphertext: cipherTextToDecrypt,
-      content: '🔒 Unable to decrypt message'
-    };
   }
+
+  // If none of the available keys could decrypt, message was encrypted with a previous session key
+  return {
+    ...messageRow,
+    is_encrypted: true,
+    is_decrypt_error: true,
+    raw_ciphertext: cipherTextToDecrypt,
+    content: '🔒 Unable to decrypt message'
+  };
 }
 
 /**

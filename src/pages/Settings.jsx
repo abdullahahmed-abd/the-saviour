@@ -14,6 +14,7 @@ import {
   KeyRound,
   Lock,
   FileDown,
+  FileUp,
   LogOut,
   Save,
   Check,
@@ -33,7 +34,8 @@ export default function Settings({ theme, onToggleTheme, installPrompt, onInstal
     isPartnerVerified,
     setSafetyModalOpen,
     setSetupModalOpen,
-    downloadOfflineBackup
+    downloadOfflineBackup,
+    restoreFromOfflineFile
   } = useCrypto();
 
   const [displayName, setDisplayName] = useState(profile?.display_name || '');
@@ -42,6 +44,12 @@ export default function Settings({ theme, onToggleTheme, installPrompt, onInstal
   const [backupError, setBackupError] = useState(null);
   const [backupSuccess, setBackupSuccess] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [showRestorePrompt, setShowRestorePrompt] = useState(false);
+  const [restoreFileContent, setRestoreFileContent] = useState('');
+  const [restorePassphrase, setRestorePassphrase] = useState('');
+  const [restoreError, setRestoreError] = useState(null);
+  const [restoreSuccess, setRestoreSuccess] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
   const [statusMessage, setStatusMessage] = useState(profile?.status_message || '');
   const [avatarUrl, setAvatarUrl] = useState(profile?.avatar_url || '');
   const [streaksEnabled, setStreaksEnabled] = useState(true);
@@ -102,6 +110,35 @@ export default function Settings({ theme, onToggleTheme, installPrompt, onInstal
     } finally {
       setIsExporting(false);
     }
+  };
+
+  const handleRestoreFile = async (e) => {
+    e.preventDefault();
+    if (!restoreFileContent || !restorePassphrase || isRestoring) return;
+    setIsRestoring(true);
+    setRestoreError(null);
+    try {
+      await restoreFromOfflineFile(restoreFileContent, restorePassphrase);
+      setRestoreSuccess(true);
+      setShowRestorePrompt(false);
+      setRestoreFileContent('');
+      setRestorePassphrase('');
+      setTimeout(() => setRestoreSuccess(false), 5000);
+    } catch (err) {
+      setRestoreError(err.message || 'Failed to restore backup file.');
+    } finally {
+      setIsRestoring(false);
+    }
+  };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      setRestoreFileContent(event.target?.result || '');
+    };
+    reader.readAsText(file);
   };
 
   return (
@@ -521,6 +558,80 @@ export default function Settings({ theme, onToggleTheme, installPrompt, onInstal
             <div style={{ fontSize: '11.5px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
               <Check size={13} />
               <span>Offline key backup downloaded successfully!</span>
+            </div>
+          )}
+
+          {/* Restore Offline Backup File */}
+          {!showRestorePrompt ? (
+            <button
+              type="button"
+              onClick={() => setShowRestorePrompt(true)}
+              className="btn btn-secondary"
+              style={{ width: '100%', padding: '10px 14px', fontSize: '12.5px', justifyContent: 'space-between' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <FileUp size={15} color="var(--accent-cyan)" />
+                <span>Restore Key from Backup File</span>
+              </div>
+              <span style={{ fontSize: '11px', opacity: 0.8 }}>.saviour-backup</span>
+            </button>
+          ) : (
+            <form onSubmit={handleRestoreFile} style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px', backgroundColor: 'var(--bg-input)', borderRadius: '10px', border: '1px solid var(--border-subtle)' }}>
+              <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
+                Select your <code>.saviour-backup</code> file and enter its passphrase:
+              </div>
+              <input
+                type="file"
+                accept=".saviour-backup,.json"
+                onChange={handleFileChange}
+                required
+                style={{ fontSize: '11.5px', color: 'var(--text-primary)' }}
+              />
+              <input
+                type="password"
+                value={restorePassphrase}
+                onChange={(e) => setRestorePassphrase(e.target.value)}
+                placeholder="Backup Passphrase..."
+                required
+                style={{
+                  width: '100%',
+                  backgroundColor: 'var(--bg-surface)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: '6px',
+                  padding: '8px 10px',
+                  color: 'var(--text-primary)',
+                  fontSize: '12.5px',
+                  outline: 'none'
+                }}
+              />
+              {restoreError && (
+                <div style={{ fontSize: '11.5px', color: '#f87171' }}>{restoreError}</div>
+              )}
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowRestorePrompt(false)}
+                  className="btn-ghost"
+                  style={{ flex: 1, padding: '6px', fontSize: '11.5px', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isRestoring || !restoreFileContent || !restorePassphrase}
+                  className="btn btn-primary"
+                  style={{ flex: 2, padding: '6px', fontSize: '11.5px' }}
+                >
+                  {isRestoring ? 'Restoring...' : 'Restore Key & Chats'}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {restoreSuccess && (
+            <div style={{ fontSize: '11.5px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <Check size={13} />
+              <span>Key restored! Chats will now decrypt automatically.</span>
             </div>
           )}
 
