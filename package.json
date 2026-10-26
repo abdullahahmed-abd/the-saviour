@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:crypto": "node tests/crypto.test.mjs && node tests/crypto_phase2.test.mjs && node tests/crypto_phase3.test.mjs"
+    "test:crypto": "node tests/crypto.test.mjs && node tests/crypto_phase2.test.mjs && node tests/crypto_phase3.test.mjs && node tests/crypto_automatic.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.48.0",

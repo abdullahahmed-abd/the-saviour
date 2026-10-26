@@ -442,6 +442,20 @@ export default function Settings({ theme, onToggleTheme, installPrompt, onInstal
             <span style={{ fontSize: '11px', opacity: 0.8 }}>Compare digits →</span>
           </button>
 
+          {/* Backup Key with Passphrase */}
+          <button
+            type="button"
+            onClick={() => setSetupModalOpen(true)}
+            className="btn btn-secondary"
+            style={{ width: '100%', padding: '10px 14px', fontSize: '12.5px', justifyContent: 'space-between' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Lock size={15} color="var(--accent-warm)" />
+              <span>Backup Key with Passphrase</span>
+            </div>
+            <span style={{ fontSize: '11px', opacity: 0.8 }}>Remote Vault →</span>
+          </button>
+
           {/* Export Offline Backup */}
           {!showBackupPrompt ? (
             <button

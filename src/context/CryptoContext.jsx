@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { supabase } from '../services/supabase';
 import { useAuth } from './AuthContext';
 import {
   generateIdentityKeyPair,
@@ -21,14 +22,19 @@ import {
   markPartnerVerified,
   clearEntireKeystore
 } from '../services/keystore';
-import { fetchUserPublicE2EEKey, fetchUserE2EEVault, publishUserE2EEKey } from '../services/e2eeKeys';
+import {
+  PUBLIC_KEYS_TABLE,
+  fetchUserPublicE2EEKey,
+  fetchUserE2EEVault,
+  publishUserE2EEKey
+} from '../services/e2eeKeys';
 
 const CryptoContext = createContext(null);
 
 export function CryptoProvider({ children }) {
   const { user, isAuthorized, partnerProfile, sanctuaryChat } = useAuth();
 
-  const [cryptoState, setCryptoState] = useState('loading'); // 'loading' | 'uninitialized' | 'locked' | 'ready' | 'waiting_for_partner' | 'key_mismatch'
+  const [cryptoState, setCryptoState] = useState('loading'); // 'loading' | 'uninitialized' | 'locked' | 'missing_local_key' | 'ready' | 'waiting_for_partner' | 'key_mismatch' | 'error'
   const [identityKey, setIdentityKey] = useState(null); // { privateKey, publicKey, publicKeyJwk, fingerprint }
   const [partnerKey, setPartnerKey] = useState(null); // { publicKey, publicKeyJwk, fingerprint }
   const [conversationKey, setConversationKey] = useState(null);
@@ -44,75 +50,52 @@ export function CryptoProvider({ children }) {
   const [remoteVaultData, setRemoteVaultData] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
+  const isInitializingRef = useRef(false);
+  const identityKeyRef = useRef(null);
+
+  useEffect(() => {
+    identityKeyRef.current = identityKey;
+  }, [identityKey]);
+
   const chatId = sanctuaryChat?.id || '00000000-0000-0000-0000-000000000001';
   const partnerId = partnerProfile?.id;
 
   // ---------------------------------------------------------------------------
-  // 1. Initialize Cryptographic State for the Authenticated User
+  // 1. Resolve Partner Public Key, TOFU Pinning & Conversation Key Derivation
   // ---------------------------------------------------------------------------
-  const initCrypto = useCallback(async () => {
-    if (!user || !isAuthorized) {
-      setCryptoState('idle');
-      setIdentityKey(null);
-      setPartnerKey(null);
-      setConversationKey(null);
-      setSafetyNumber(null);
-      return;
-    }
-
-    setCryptoState('loading');
-    setPassphraseError(null);
-
-    try {
-      // 1. Check local IndexedDB keystore for current user's identity key
-      const localIdKey = await getIdentityKey(user.id);
-
-      if (localIdKey && localIdKey.privateKey && localIdKey.publicKey) {
-        // Local identity key is present on this device
-        setIdentityKey(localIdKey);
-        await resolvePartnerAndDerive(localIdKey, partnerId, chatId);
-        return;
-      }
-
-      // 2. Local key not found: Check if user has an encrypted vault in Supabase
-      const remoteRecord = await fetchUserE2EEVault(user.id);
-
-      if (remoteRecord && remoteRecord.encrypted_private_key) {
-        // Vault exists remotely -> Device is locked; requires passphrase unlock
-        setRemoteVaultData(remoteRecord);
-        setCryptoState('locked');
-        setUnlockModalOpen(true);
-      } else {
-        // No local key and no remote vault -> First-time user needs to initialize E2EE
-        setCryptoState('uninitialized');
-        setSetupModalOpen(true);
-      }
-    } catch (err) {
-      console.warn('Crypto initialization non-fatal error:', err.message);
-      setCryptoState('uninitialized');
-      setSetupModalOpen(true);
-    }
-  }, [user, isAuthorized, partnerId, chatId]);
-
-  useEffect(() => {
-    initCrypto();
-  }, [initCrypto]);
-
-  // ---------------------------------------------------------------------------
-  // 2. Resolve Partner Public Key, TOFU Pinning & Conversation Key Derivation
-  // ---------------------------------------------------------------------------
-  const resolvePartnerAndDerive = async (myIdentity, targetPartnerId, currentChatId) => {
-    if (!targetPartnerId) {
+  const resolvePartnerAndDerive = useCallback(async (myIdentity, targetPartnerId, currentChatId) => {
+    if (!myIdentity || !myIdentity.privateKey) {
       setCryptoState('waiting_for_partner');
       return;
     }
 
+    let resolvedPartnerId = targetPartnerId;
+
     try {
+      // If targetPartnerId is not known yet (e.g. chat_members not loaded), query public keys table
+      if (!resolvedPartnerId && user) {
+        const { data: partnerKeyRow } = await supabase
+          .from(PUBLIC_KEYS_TABLE)
+          .select('user_id, public_key, key_fingerprint')
+          .neq('user_id', user.id)
+          .maybeSingle();
+
+        if (partnerKeyRow && partnerKeyRow.user_id) {
+          resolvedPartnerId = partnerKeyRow.user_id;
+        }
+      }
+
+      if (!resolvedPartnerId) {
+        setPartnerKey(null);
+        setCryptoState('waiting_for_partner');
+        return;
+      }
+
       // Fetch partner's public key from Supabase (strictly public fields only)
-      const remotePartnerRecord = await fetchUserPublicE2EEKey(targetPartnerId);
+      const remotePartnerRecord = await fetchUserPublicE2EEKey(resolvedPartnerId);
 
       if (!remotePartnerRecord || !remotePartnerRecord.public_key) {
-        // Partner has not initialized their E2EE keys yet
+        // Partner has not established their public key yet
         setPartnerKey(null);
         setCryptoState('waiting_for_partner');
         return;
@@ -130,7 +113,7 @@ export function CryptoProvider({ children }) {
       setPartnerKey(resolvedPartner);
 
       // Check pinned partner fingerprint in local IndexedDB
-      const pinned = await getPinnedPartnerFingerprint(targetPartnerId);
+      const pinned = await getPinnedPartnerFingerprint(resolvedPartnerId);
 
       if (pinned) {
         // Fingerprint was previously pinned: Verify anti-substitution guard
@@ -146,12 +129,11 @@ export function CryptoProvider({ children }) {
           return;
         }
 
-        // Fingerprint matches: Never mark as verified automatically.
-        // TOFU pinning alone is NOT verification.
+        // Fingerprint matches pinned record
         setIsPartnerVerified(Boolean(pinned.isVerified));
       } else {
         // First time seeing partner: Pin fingerprint with isVerified = false (TOFU)
-        await pinPartnerFingerprint(targetPartnerId, partnerFingerprint, false);
+        await pinPartnerFingerprint(resolvedPartnerId, partnerFingerprint, false);
         setIsPartnerVerified(false);
       }
 
@@ -177,10 +159,142 @@ export function CryptoProvider({ children }) {
       console.warn('Failed to resolve partner key or derive CEK:', err.message);
       setCryptoState('waiting_for_partner');
     }
-  };
+  }, [user]);
 
   // ---------------------------------------------------------------------------
-  // 3. First-Time E2EE Setup
+  // 2. Initialize Cryptographic State (Automatic, Frictionless Key Lifecycle)
+  // ---------------------------------------------------------------------------
+  const initCrypto = useCallback(async () => {
+    if (!user || !isAuthorized) {
+      setCryptoState('idle');
+      setIdentityKey(null);
+      setPartnerKey(null);
+      setConversationKey(null);
+      setSafetyNumber(null);
+      return;
+    }
+
+    if (isInitializingRef.current) return;
+    isInitializingRef.current = true;
+
+    setCryptoState('loading');
+    setPassphraseError(null);
+
+    try {
+      // 1. Check local IndexedDB keystore for current user's identity key
+      let localIdKey = await getIdentityKey(user.id);
+
+      if (localIdKey && localIdKey.privateKey && localIdKey.publicKey) {
+        // Local identity key is already present and valid on this device
+        setIdentityKey(localIdKey);
+        identityKeyRef.current = localIdKey;
+
+        // Ensure public key is published remotely if not yet synced
+        try {
+          const remotePub = await fetchUserPublicE2EEKey(user.id);
+          if (!remotePub || remotePub.key_fingerprint !== localIdKey.fingerprint) {
+            await publishUserE2EEKey({
+              userId: user.id,
+              publicKeyJwk: localIdKey.publicKeyJwk,
+              fingerprint: localIdKey.fingerprint
+            });
+          }
+        } catch (syncErr) {
+          console.warn('Non-fatal background public key sync notice:', syncErr.message);
+        }
+
+        await resolvePartnerAndDerive(localIdKey, partnerId, chatId);
+        return;
+      }
+
+      // 2. Local key not found in IndexedDB: Check if user already has a public key or vault in Supabase
+      const [remotePub, remoteVault] = await Promise.all([
+        fetchUserPublicE2EEKey(user.id),
+        fetchUserE2EEVault(user.id)
+      ]);
+
+      if (remoteVault && remoteVault.encrypted_private_key) {
+        // Vault exists remotely -> Device is locked; requires passphrase unlock to restore
+        setRemoteVaultData(remoteVault);
+        setCryptoState('locked');
+        return;
+      }
+
+      if (remotePub && remotePub.public_key) {
+        // User already has an established public identity key in Supabase,
+        // but the private key is missing on this browser/device and no remote vault exists.
+        // DO NOT silently regenerate a key without user awareness, as this would make historical messages unreadable.
+        console.warn('Identity key exists remotely but private key is missing on this device.');
+        setCryptoState('missing_local_key');
+        return;
+      }
+
+      // 3. Brand new user: Neither local key nor remote public key exists!
+      // AUTOMATIC KEY LIFECYCLE: Automatically generate identity key pair on device
+      const { keyPair, publicKeyJwk, fingerprint } = await generateIdentityKeyPair();
+
+      const identityRecord = {
+        privateKey: keyPair.privateKey,
+        publicKey: keyPair.publicKey,
+        publicKeyJwk,
+        fingerprint
+      };
+
+      // Save to local IndexedDB (never leaves device unencrypted)
+      await saveIdentityKey(user.id, identityRecord);
+      setIdentityKey(identityRecord);
+      identityKeyRef.current = identityRecord;
+
+      // Publish public key to Supabase (public fields only)
+      await publishUserE2EEKey({
+        userId: user.id,
+        publicKeyJwk,
+        fingerprint
+      });
+
+      // Complete derivation with partner if partner's key is available
+      await resolvePartnerAndDerive(identityRecord, partnerId, chatId);
+    } catch (err) {
+      console.warn('Crypto initialization error:', err.message);
+      setCryptoState('error');
+    } finally {
+      isInitializingRef.current = false;
+    }
+  }, [user, isAuthorized, partnerId, chatId, resolvePartnerAndDerive]);
+
+  useEffect(() => {
+    initCrypto();
+  }, [initCrypto]);
+
+  // ---------------------------------------------------------------------------
+  // 3. Realtime Listener on Public Keys (Instant Partner Discovery & Anti-MITM)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!user || !isAuthorized) return;
+
+    const channel = supabase.channel(`e2ee_keys_realtime_${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: PUBLIC_KEYS_TABLE },
+        async (payload) => {
+          const row = payload.new;
+          if (!row || !row.user_id || row.user_id === user.id) return;
+          // Partner's public key was created or updated in real-time
+          const currentIdKey = identityKeyRef.current || (await getIdentityKey(user.id));
+          if (currentIdKey) {
+            await resolvePartnerAndDerive(currentIdKey, row.user_id, chatId);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user, isAuthorized, chatId, resolvePartnerAndDerive]);
+
+  // ---------------------------------------------------------------------------
+  // 4. Passphrase Setup for Encrypted Remote Backup Vault (Optional, from Settings)
   // ---------------------------------------------------------------------------
   const setupE2EE = async (passphrase) => {
     if (!user) throw new Error('User required');
@@ -193,41 +307,43 @@ export function CryptoProvider({ children }) {
     setPassphraseError(null);
 
     try {
-      // 1. Generate local ECDH identity keypair
-      const { keyPair, publicKeyJwk, fingerprint } = await generateIdentityKeyPair();
+      // Use existing identity key if present, otherwise generate new
+      let record = identityKeyRef.current || (await getIdentityKey(user.id));
+      if (!record || !record.privateKey) {
+        const { keyPair, publicKeyJwk, fingerprint } = await generateIdentityKeyPair();
+        record = {
+          privateKey: keyPair.privateKey,
+          publicKey: keyPair.publicKey,
+          publicKeyJwk,
+          fingerprint
+        };
+        await saveIdentityKey(user.id, record);
+        setIdentityKey(record);
+        identityKeyRef.current = record;
+      }
 
-      // 2. Encrypt private key vault with PBKDF2 (600,000 iterations)
-      const vault = await exportEncryptedKeyVault(keyPair.privateKey, passphrase, {
+      // Encrypt private key vault with PBKDF2 (600,000 iterations)
+      const vault = await exportEncryptedKeyVault(record.privateKey, passphrase, {
         userId: user.id,
         email: user.email
       });
 
-      // 3. Save to local IndexedDB
-      const identityRecord = {
-        privateKey: keyPair.privateKey,
-        publicKey: keyPair.publicKey,
-        publicKeyJwk,
-        fingerprint
-      };
-      await saveIdentityKey(user.id, identityRecord);
-      setIdentityKey(identityRecord);
-
-      // 4. Publish public key and encrypted vault to Supabase
+      // Publish public key and encrypted vault to Supabase
       await publishUserE2EEKey({
         userId: user.id,
-        publicKeyJwk,
+        publicKeyJwk: record.publicKeyJwk,
         encryptedVault: vault.encrypted_private_key,
         keySalt: vault.key_salt,
         keyIv: vault.key_iv,
         keyKdfIterations: vault.key_kdf_iterations,
-        fingerprint
+        fingerprint: record.fingerprint
       });
 
-      // 5. Complete derivation if partner key available
-      await resolvePartnerAndDerive(identityRecord, partnerId, chatId);
+      // Complete derivation
+      await resolvePartnerAndDerive(record, partnerId, chatId);
 
       setSetupModalOpen(false);
-      return { success: true, vault, publicKeyJwk };
+      return { success: true, vault, publicKeyJwk: record.publicKeyJwk };
     } catch (err) {
       setPassphraseError(err.message);
       throw err;
@@ -237,7 +353,7 @@ export function CryptoProvider({ children }) {
   };
 
   // ---------------------------------------------------------------------------
-  // 4. Passphrase Unlock on New Device
+  // 5. Passphrase Unlock on New Device
   // ---------------------------------------------------------------------------
   const unlockE2EE = async (passphrase) => {
     if (!user) throw new Error('User required');
@@ -259,18 +375,28 @@ export function CryptoProvider({ children }) {
         passphrase
       );
 
-      const pubKey = await importPublicKeyFromJwk(remoteVaultData.public_key);
+      // Fetch public key if not in vault data
+      let pubJwk = remoteVaultData.public_key;
+      let fingerprint = remoteVaultData.key_fingerprint;
+      if (!pubJwk) {
+        const pubRecord = await fetchUserPublicE2EEKey(user.id);
+        pubJwk = pubRecord?.public_key;
+        fingerprint = pubRecord?.key_fingerprint || '';
+      }
+
+      const pubKey = await importPublicKeyFromJwk(pubJwk);
 
       const identityRecord = {
         privateKey: restored.privateKey,
         publicKey: pubKey,
-        publicKeyJwk: remoteVaultData.public_key,
-        fingerprint: remoteVaultData.key_fingerprint
+        publicKeyJwk: pubJwk,
+        fingerprint
       };
 
       // Save unlocked key to local device IndexedDB
       await saveIdentityKey(user.id, identityRecord);
       setIdentityKey(identityRecord);
+      identityKeyRef.current = identityRecord;
 
       // Complete derivation
       await resolvePartnerAndDerive(identityRecord, partnerId, chatId);
@@ -289,7 +415,7 @@ export function CryptoProvider({ children }) {
   };
 
   // ---------------------------------------------------------------------------
-  // 5. Restore from Offline Backup File (.saviour-backup)
+  // 6. Restore from Offline Backup File (.saviour-backup)
   // ---------------------------------------------------------------------------
   const restoreFromOfflineFile = async (jsonString, passphrase) => {
     if (!user) throw new Error('User required');
@@ -309,6 +435,7 @@ export function CryptoProvider({ children }) {
 
       await saveIdentityKey(user.id, identityRecord);
       setIdentityKey(identityRecord);
+      identityKeyRef.current = identityRecord;
 
       await resolvePartnerAndDerive(identityRecord, partnerId, chatId);
       setUnlockModalOpen(false);
@@ -323,39 +450,76 @@ export function CryptoProvider({ children }) {
   };
 
   // ---------------------------------------------------------------------------
-  // 6. Explicit Safety Number Verification (Strict Anti-MITM)
+  // 7. Explicit Reset / Regeneration When Local Key is Truly Missing
+  // ---------------------------------------------------------------------------
+  const resetIdentityKey = async () => {
+    if (!user) throw new Error('User required');
+    setIsProcessing(true);
+    try {
+      const { keyPair, publicKeyJwk, fingerprint } = await generateIdentityKeyPair();
+      const identityRecord = {
+        privateKey: keyPair.privateKey,
+        publicKey: keyPair.publicKey,
+        publicKeyJwk,
+        fingerprint
+      };
+      await saveIdentityKey(user.id, identityRecord);
+      setIdentityKey(identityRecord);
+      identityKeyRef.current = identityRecord;
+
+      await publishUserE2EEKey({
+        userId: user.id,
+        publicKeyJwk,
+        fingerprint
+      });
+
+      await resolvePartnerAndDerive(identityRecord, partnerId, chatId);
+      return { success: true };
+    } catch (err) {
+      console.error('Failed to reset identity key:', err);
+      throw err;
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // 8. Explicit Safety Number Verification (Strict Anti-MITM)
   // ---------------------------------------------------------------------------
   const verifyPartnerSafetyNumber = async () => {
-    if (!partnerId) return;
-    await markPartnerVerified(partnerId, true);
+    const targetId = partnerId || partnerKey?.user_id;
+    if (!targetId) return;
+    await markPartnerVerified(targetId, true);
     setIsPartnerVerified(true);
     setSafetyModalOpen(false);
   };
 
   const unverifyPartnerSafetyNumber = async () => {
-    if (!partnerId) return;
-    await markPartnerVerified(partnerId, false);
+    const targetId = partnerId || partnerKey?.user_id;
+    if (!targetId) return;
+    await markPartnerVerified(targetId, false);
     setIsPartnerVerified(false);
   };
 
   // ---------------------------------------------------------------------------
-  // 7. Accept New Key After Partner Reinstallation / Genuine Rotation
+  // 9. Accept New Key After Partner Reinstallation / Genuine Rotation
   // ---------------------------------------------------------------------------
   const acceptNewPartnerKey = async () => {
-    if (!partnerId || !partnerKey) return;
+    const targetId = partnerId || partnerKey?.user_id;
+    if (!targetId || !partnerKey) return;
     // Re-pin new fingerprint with isVerified = false
-    await pinPartnerFingerprint(partnerId, partnerKey.fingerprint, false);
+    await pinPartnerFingerprint(targetId, partnerKey.fingerprint, false);
     setKeyMismatchDetails(null);
     setIsPartnerVerified(false);
 
     // Re-compute and derive
     if (identityKey) {
-      await resolvePartnerAndDerive(identityKey, partnerId, chatId);
+      await resolvePartnerAndDerive(identityKey, targetId, chatId);
     }
   };
 
   // ---------------------------------------------------------------------------
-  // 8. Export Offline Backup File (.saviour-backup)
+  // 10. Export Offline Backup File (.saviour-backup)
   // ---------------------------------------------------------------------------
   const downloadOfflineBackup = async (passphrase) => {
     if (!identityKey) throw new Error('Identity key not initialized');
@@ -396,6 +560,7 @@ export function CryptoProvider({ children }) {
     setupE2EE,
     unlockE2EE,
     restoreFromOfflineFile,
+    resetIdentityKey,
     verifyPartnerSafetyNumber,
     unverifyPartnerSafetyNumber,
     acceptNewPartnerKey,

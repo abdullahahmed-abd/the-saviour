@@ -103,6 +103,12 @@ export async function exportPublicKeyToJwk(publicKey) {
  * Import public key from JWK format to CryptoKey
  */
 export async function importPublicKeyFromJwk(jwk) {
+  if (!jwk || typeof jwk !== 'object') {
+    throw new Error('Invalid public key format: JWK object required');
+  }
+  if (jwk.kty !== 'EC' || jwk.crv !== 'P-256' || typeof jwk.x !== 'string' || typeof jwk.y !== 'string') {
+    throw new Error('Invalid public key format: Expected EC P-256 curve coordinates');
+  }
   return cryptoSubtle.importKey(
     'jwk',
     {

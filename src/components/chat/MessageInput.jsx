@@ -13,7 +13,7 @@ export default function MessageInput({
   onSelectPhotoFile
 }) {
   const { sendTextMessage, broadcastTyping } = useChat();
-  const { cryptoState, conversationKey, setUnlockModalOpen, setSetupModalOpen } = useCrypto();
+  const { cryptoState, conversationKey, setUnlockModalOpen, setSetupModalOpen, resetIdentityKey } = useCrypto();
   const [text, setText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -48,13 +48,29 @@ export default function MessageInput({
   };
 
   const handleSecurityAction = () => {
-    if (cryptoState === 'locked') setUnlockModalOpen(true);
-    else if (cryptoState === 'uninitialized') setSetupModalOpen(true);
+    if (cryptoState === 'locked') {
+      setUnlockModalOpen(true);
+    } else if (cryptoState === 'missing_local_key') {
+      const confirmed = window.confirm(
+        'Encryption key missing on this device.\n\nBecause keys are stored on-device, your previous private key was not found in this browser. Generating a new key will allow you to send and receive new encrypted messages, but older messages encrypted with your previous key will remain unreadable.\n\nGenerate a new encryption key now?'
+      );
+      if (confirmed && resetIdentityKey) {
+        resetIdentityKey().catch(err => alert('Failed to reset key: ' + err.message));
+      }
+    } else if (cryptoState === 'uninitialized') {
+      if (resetIdentityKey) {
+        resetIdentityKey().catch(err => alert('Failed to initialize key: ' + err.message));
+      }
+    }
   };
 
   const handleSend = async (e) => {
     e?.preventDefault();
     if (!isKeyReady) {
+      if (cryptoState === 'waiting_for_partner') {
+        alert('Cannot send: Waiting for partner to connect and establish their encryption keys. Unencrypted messages are strictly prohibited.');
+        return;
+      }
       handleSecurityAction();
       return;
     }
@@ -177,21 +193,21 @@ export default function MessageInput({
         </div>
       )}
 
-      {/* E2EE Lock / Uninitialized Security Bar */}
+      {/* E2EE Lock / Uninitialized / Waiting Security Bar */}
       {!isKeyReady && (
         <div
           onClick={handleSecurityAction}
           style={{
-            cursor: (cryptoState === 'locked' || cryptoState === 'uninitialized') ? 'pointer' : 'default',
+            cursor: (cryptoState === 'locked' || cryptoState === 'uninitialized' || cryptoState === 'missing_local_key') ? 'pointer' : 'default',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            background: 'rgba(239, 68, 68, 0.12)',
-            border: '1px solid rgba(239, 68, 68, 0.3)',
+            background: cryptoState === 'waiting_for_partner' ? 'rgba(56, 189, 248, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+            border: cryptoState === 'waiting_for_partner' ? '1px solid rgba(56, 189, 248, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
             borderRadius: 'var(--radius-md)',
             padding: '8px 12px',
             fontSize: '12px',
-            color: '#f87171'
+            color: cryptoState === 'waiting_for_partner' ? '#38bdf8' : '#f87171'
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -199,16 +215,18 @@ export default function MessageInput({
             <span>
               {cryptoState === 'locked'
                 ? 'Encryption vault locked — tap here to unlock'
-                : cryptoState === 'uninitialized'
-                ? 'E2EE setup required — tap here to initialize'
+                : cryptoState === 'missing_local_key'
+                ? 'Encryption key missing on this device — tap here to reset'
                 : cryptoState === 'key_mismatch'
                 ? 'Partner encryption key changed — verify safety number'
-                : 'Waiting for partner public keys...'}
+                : cryptoState === 'waiting_for_partner'
+                ? 'Waiting for partner to connect — messages will encrypt automatically'
+                : 'Initializing end-to-end encryption...'}
             </span>
           </div>
-          {(cryptoState === 'locked' || cryptoState === 'uninitialized') && (
+          {(cryptoState === 'locked' || cryptoState === 'missing_local_key') && (
             <span style={{ textDecoration: 'underline', fontWeight: 600, fontSize: '11px' }}>
-              {cryptoState === 'locked' ? 'Unlock' : 'Setup'}
+              {cryptoState === 'locked' ? 'Unlock' : 'Reset Key'}
             </span>
           )}
         </div>
@@ -323,9 +341,11 @@ export default function MessageInput({
               !isKeyReady
                 ? (cryptoState === 'locked'
                   ? '🔒 Vault is locked — click to unlock...'
-                  : cryptoState === 'uninitialized'
-                  ? '🔒 E2EE setup required — click to setup...'
-                  : '🔒 Waiting for encryption keys...')
+                  : cryptoState === 'missing_local_key'
+                  ? '🔒 Encryption key missing — click to reset...'
+                  : cryptoState === 'waiting_for_partner'
+                  ? '🔒 Waiting for partner to connect...'
+                  : '🔒 Initializing encryption...')
                 : 'Whisper something sweet...'
             }
             style={{

@@ -26,7 +26,6 @@ export default function AttachmentModal({ file, isOpen, onClose }) {
     if (!file || uploadingPhoto) return;
     if (!isKeyReady) {
       if (cryptoState === 'locked') setUnlockModalOpen(true);
-      else if (cryptoState === 'uninitialized') setSetupModalOpen(true);
       return;
     }
     try {
@@ -95,19 +94,18 @@ export default function AttachmentModal({ file, isOpen, onClose }) {
             <div style={{ opacity: 0.9 }}>
               {cryptoState === 'locked'
                 ? 'Your encryption vault is locked. Unlock it to encrypt and send photos.'
-                : cryptoState === 'uninitialized'
-                ? 'End-to-End Encryption setup is required before sending photos.'
+                : cryptoState === 'missing_local_key'
+                ? 'Encryption key missing on this device. Key restoration or reset required.'
                 : cryptoState === 'key_mismatch'
                 ? 'Partner encryption key changed. Verification required.'
-                : 'Waiting for partner public keys.'}
+                : cryptoState === 'waiting_for_partner'
+                ? 'Waiting for partner to connect and establish their encryption keys.'
+                : 'Initializing end-to-end encryption...'}
             </div>
-            {(cryptoState === 'locked' || cryptoState === 'uninitialized') && (
+            {cryptoState === 'locked' && (
               <button
                 type="button"
-                onClick={() => {
-                  if (cryptoState === 'locked') setUnlockModalOpen(true);
-                  else if (cryptoState === 'uninitialized') setSetupModalOpen(true);
-                }}
+                onClick={() => setUnlockModalOpen(true)}
                 style={{
                   marginTop: '4px',
                   padding: '6px 12px',
@@ -121,7 +119,7 @@ export default function AttachmentModal({ file, isOpen, onClose }) {
                   alignSelf: 'flex-start'
                 }}
               >
-                {cryptoState === 'locked' ? 'Unlock Vault' : 'Setup Encryption'}
+                Unlock Vault
               </button>
             )}
           </div>

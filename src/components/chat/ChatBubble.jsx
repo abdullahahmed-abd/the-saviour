@@ -164,7 +164,7 @@ export default function ChatBubble({
         category: isImage ? 'photo' : isGift ? 'gift' : 'message',
         title: isGift ? metadata.title || 'Virtual Gift' : isImage ? 'Shared Photo' : 'Chat Message',
         content: message.content || '',
-        mediaUrl: metadata.signed_url || metadata.photo_path || '',
+        mediaUrl: metadata.photo_path || metadata.signed_url || '',
         metadata: { message_id: message.id, original_sender: message.sender_id }
       });
       setSavedMemory(true);

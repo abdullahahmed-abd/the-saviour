@@ -21,6 +21,12 @@ export async function uploadEncryptedChatPhoto(file, chatId, userId, conversatio
     throw new Error('E2EE key is unavailable. Uploading unencrypted photos is strictly blocked.');
   }
 
+  // Validate allowed photo formats
+  const validMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic', 'image/heif'];
+  if (file.type && !validMimes.includes(file.type.toLowerCase())) {
+    throw new Error('Unsupported image format. Please select a JPG, PNG, or WebP photo.');
+  }
+
   // Check initial file size limit (5MB)
   if (file.size > 5 * 1024 * 1024) {
     throw new Error('Image exceeds 5MB limit. Please select a smaller photo.');
