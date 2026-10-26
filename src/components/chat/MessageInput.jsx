@@ -13,7 +13,15 @@ export default function MessageInput({
   onSelectPhotoFile
 }) {
   const { sendTextMessage, broadcastTyping } = useChat();
-  const { cryptoState, conversationKey, setUnlockModalOpen, setSetupModalOpen, resetIdentityKey } = useCrypto();
+  const {
+    cryptoState,
+    conversationKey,
+    setUnlockModalOpen,
+    setSetupModalOpen,
+    setSafetyModalOpen,
+    resetIdentityKey,
+    acceptNewPartnerKey
+  } = useCrypto();
   const [text, setText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -48,7 +56,9 @@ export default function MessageInput({
   };
 
   const handleSecurityAction = () => {
-    if (cryptoState === 'locked') {
+    if (cryptoState === 'key_mismatch') {
+      setSafetyModalOpen(true);
+    } else if (cryptoState === 'locked') {
       setUnlockModalOpen(true);
     } else if (cryptoState === 'missing_local_key') {
       const confirmed = window.confirm(
@@ -201,7 +211,7 @@ export default function MessageInput({
         <div
           onClick={handleSecurityAction}
           style={{
-            cursor: (cryptoState === 'locked' || cryptoState === 'uninitialized' || cryptoState === 'missing_local_key') ? 'pointer' : 'default',
+            cursor: (cryptoState === 'locked' || cryptoState === 'uninitialized' || cryptoState === 'missing_local_key' || cryptoState === 'key_mismatch') ? 'pointer' : 'default',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
@@ -225,15 +235,15 @@ export default function MessageInput({
                 : cryptoState === 'missing_local_key'
                 ? 'Encryption key missing — tap to reset'
                 : cryptoState === 'key_mismatch'
-                ? 'Partner key changed — verify safety number'
+                ? "Partner's key changed — tap to compare or accept"
                 : cryptoState === 'waiting_for_partner'
                 ? 'Waiting for partner to connect...'
                 : 'Initializing end-to-end encryption...'}
             </span>
           </div>
-          {(cryptoState === 'locked' || cryptoState === 'missing_local_key') && (
+          {(cryptoState === 'locked' || cryptoState === 'missing_local_key' || cryptoState === 'key_mismatch') && (
             <span style={{ textDecoration: 'underline', fontWeight: 600, fontSize: '11px', flexShrink: 0, marginLeft: '6px' }}>
-              {cryptoState === 'locked' ? 'Unlock' : 'Reset Key'}
+              {cryptoState === 'locked' ? 'Unlock' : cryptoState === 'missing_local_key' ? 'Reset Key' : 'Review'}
             </span>
           )}
         </div>
@@ -373,6 +383,8 @@ export default function MessageInput({
                   ? '🔒 Key missing...'
                   : cryptoState === 'waiting_for_partner'
                   ? '🔒 Waiting for partner...'
+                  : cryptoState === 'key_mismatch'
+                  ? '🔒 Partner key changed — tap Accept above'
                   : '🔒 Initializing...')
                 : 'Whisper something sweet...'
             }

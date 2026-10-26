@@ -234,11 +234,12 @@ export async function pinPartnerFingerprint(partnerUserId, fingerprint, isVerifi
   if (!partnerUserId || !fingerprint) throw new Error('partnerUserId and fingerprint required');
   return perform(STORES.PINNED_FINGERPRINTS, 'readwrite', async (store) => {
     const existing = await store.get(partnerUserId);
+    const fingerprintChanged = existing && existing.fingerprint !== fingerprint;
     await store.put({
       id: partnerUserId,
       fingerprint,
-      isVerified: Boolean(isVerified || existing?.isVerified),
-      pinnedAt: existing?.pinnedAt || Date.now(),
+      isVerified: fingerprintChanged ? Boolean(isVerified) : Boolean(isVerified || existing?.isVerified),
+      pinnedAt: fingerprintChanged ? Date.now() : (existing?.pinnedAt || Date.now()),
       lastCheckedAt: Date.now()
     });
   });

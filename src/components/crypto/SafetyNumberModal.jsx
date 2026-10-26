@@ -5,7 +5,14 @@ import { useCrypto } from '../../context/CryptoContext';
 import { useAuth } from '../../context/AuthContext';
 
 export default function SafetyNumberModal({ isOpen, onClose }) {
-  const { safetyNumber, isPartnerVerified, verifyPartnerSafetyNumber, unverifyPartnerSafetyNumber } = useCrypto();
+  const {
+    safetyNumber,
+    isPartnerVerified,
+    cryptoState,
+    verifyPartnerSafetyNumber,
+    unverifyPartnerSafetyNumber,
+    acceptNewPartnerKey
+  } = useCrypto();
   const { partnerProfile } = useAuth();
 
   const [copied, setCopied] = useState(false);
@@ -23,6 +30,8 @@ export default function SafetyNumberModal({ isOpen, onClose }) {
 
   if (!isOpen) return null;
 
+  const isMismatch = cryptoState === 'key_mismatch';
+
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Safety Number Verification 🛡️">
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -34,22 +43,46 @@ export default function SafetyNumberModal({ isOpen, onClose }) {
             justifyContent: 'space-between',
             padding: '12px 16px',
             borderRadius: '14px',
-            backgroundColor: isPartnerVerified ? 'rgba(16, 185, 129, 0.12)' : 'rgba(245, 158, 11, 0.12)',
-            border: `1px solid ${isPartnerVerified ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`
+            backgroundColor: isMismatch
+              ? 'rgba(239, 68, 68, 0.12)'
+              : isPartnerVerified
+              ? 'rgba(16, 185, 129, 0.12)'
+              : 'rgba(245, 158, 11, 0.12)',
+            border: `1px solid ${
+              isMismatch
+                ? 'rgba(239, 68, 68, 0.3)'
+                : isPartnerVerified
+                ? 'rgba(16, 185, 129, 0.3)'
+                : 'rgba(245, 158, 11, 0.3)'
+            }`
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            {isPartnerVerified ? (
+            {isMismatch ? (
+              <ShieldAlert size={22} color="#ef4444" />
+            ) : isPartnerVerified ? (
               <ShieldCheck size={22} color="#10b981" />
             ) : (
               <ShieldAlert size={22} color="#f59e0b" />
             )}
             <div>
-              <div style={{ fontSize: '14px', fontWeight: 700, color: isPartnerVerified ? '#10b981' : '#f59e0b' }}>
-                {isPartnerVerified ? 'Verified Sanctuary Key' : 'Unverified Identity Key'}
+              <div
+                style={{
+                  fontSize: '14px',
+                  fontWeight: 700,
+                  color: isMismatch ? '#f87171' : isPartnerVerified ? '#10b981' : '#f59e0b'
+                }}
+              >
+                {isMismatch
+                  ? "Partner's Identity Key Changed"
+                  : isPartnerVerified
+                  ? 'Verified Sanctuary Key'
+                  : 'Unverified Identity Key'}
               </div>
               <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                {isPartnerVerified
+                {isMismatch
+                  ? `Partner reinstalled or changed devices. Verify digits below.`
+                  : isPartnerVerified
                   ? `You have verified the Safety Number with ${partnerName}`
                   : 'Compare numbers out-of-band to guarantee anti-interception'}
               </div>
@@ -146,8 +179,34 @@ export default function SafetyNumberModal({ isOpen, onClose }) {
         )}
 
         {/* Verification Action Buttons */}
-        <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
-          {isPartnerVerified ? (
+        <div style={{ display: 'flex', gap: '10px', marginTop: '4px', flexDirection: isMismatch ? 'column' : 'row' }}>
+          {isMismatch ? (
+            <button
+              type="button"
+              onClick={() => {
+                acceptNewPartnerKey();
+                onClose();
+              }}
+              className="btn"
+              style={{
+                width: '100%',
+                padding: '12px',
+                backgroundColor: '#ef4444',
+                color: '#ffffff',
+                fontWeight: 600,
+                borderRadius: 'var(--radius-md)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                border: 'none',
+                cursor: 'pointer'
+              }}
+            >
+              <ShieldCheck size={18} />
+              <span>Accept & Trust New Key</span>
+            </button>
+          ) : isPartnerVerified ? (
             <button
               type="button"
               onClick={unverifyPartnerSafetyNumber}

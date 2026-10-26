@@ -108,9 +108,15 @@ export function CryptoProvider({ children }) {
       const resolvedPartner = {
         publicKey: importedPartnerPub,
         publicKeyJwk: partnerJwk,
-        fingerprint: partnerFingerprint
+        fingerprint: partnerFingerprint,
+        user_id: resolvedPartnerId
       };
       setPartnerKey(resolvedPartner);
+
+      // Compute deterministic mutual Safety Number with currently fetched partner public key
+      // Ensures user can compare safety digits even when key_mismatch occurs
+      const sNumber = await computeSafetyNumber(myIdentity.publicKeyJwk, partnerJwk);
+      setSafetyNumber(sNumber);
 
       // Check pinned partner fingerprint in local IndexedDB
       const pinned = await getPinnedPartnerFingerprint(resolvedPartnerId);
@@ -121,8 +127,10 @@ export function CryptoProvider({ children }) {
           // CRITICAL SECURITY EVENT: Partner's public key changed!
           console.warn('⚠️ SECURITY WARNING: Partner identity key mismatch detected!');
           setKeyMismatchDetails({
+            partnerId: resolvedPartnerId,
             pinnedFingerprint: pinned.fingerprint,
-            currentFingerprint: partnerFingerprint
+            currentFingerprint: partnerFingerprint,
+            partnerKey: resolvedPartner
           });
           setCryptoState('key_mismatch');
           setIsPartnerVerified(false);
@@ -137,21 +145,14 @@ export function CryptoProvider({ children }) {
         setIsPartnerVerified(false);
       }
 
-      // Compute deterministic mutual Safety Number
-      const sNumber = await computeSafetyNumber(myIdentity.publicKeyJwk, partnerJwk);
-      setSafetyNumber(sNumber);
-
       // Derive Conversation Encryption Key (CEK)
-      let cek = await getConversationKey(currentChatId, 'epoch_1');
-      if (!cek) {
-        cek = await deriveConversationKey({
-          myPrivateKey: myIdentity.privateKey,
-          partnerPublicKey: importedPartnerPub,
-          chatId: currentChatId,
-          epoch: 'epoch_1'
-        });
-        await saveConversationKey(currentChatId, 'epoch_1', cek);
-      }
+      const cek = await deriveConversationKey({
+        myPrivateKey: myIdentity.privateKey,
+        partnerPublicKey: importedPartnerPub,
+        chatId: currentChatId,
+        epoch: 'epoch_1'
+      });
+      await saveConversationKey(currentChatId, 'epoch_1', cek);
 
       setConversationKey(cek);
       setCryptoState('ready');
@@ -505,16 +506,41 @@ export function CryptoProvider({ children }) {
   // 9. Accept New Key After Partner Reinstallation / Genuine Rotation
   // ---------------------------------------------------------------------------
   const acceptNewPartnerKey = async () => {
-    const targetId = partnerId || partnerKey?.user_id;
-    if (!targetId || !partnerKey) return;
-    // Re-pin new fingerprint with isVerified = false
-    await pinPartnerFingerprint(targetId, partnerKey.fingerprint, false);
-    setKeyMismatchDetails(null);
-    setIsPartnerVerified(false);
+    const targetId = partnerId || partnerKey?.user_id || keyMismatchDetails?.partnerId;
+    const currentPartnerKey = partnerKey || keyMismatchDetails?.partnerKey;
+    if (!targetId || !currentPartnerKey) {
+      console.warn('Cannot accept new partner key: missing partner ID or public key');
+      return;
+    }
 
-    // Re-compute and derive
-    if (identityKey) {
-      await resolvePartnerAndDerive(identityKey, targetId, chatId);
+    try {
+      // 1. Re-pin new fingerprint with isVerified = false
+      await pinPartnerFingerprint(targetId, currentPartnerKey.fingerprint, false);
+      setKeyMismatchDetails(null);
+      setIsPartnerVerified(false);
+
+      // 2. Re-derive conversation encryption key with partner's new public key
+      const currentIdKey = identityKeyRef.current || (await getIdentityKey(user.id));
+      if (currentIdKey && currentPartnerKey.publicKey) {
+        const newCek = await deriveConversationKey({
+          myPrivateKey: currentIdKey.privateKey,
+          partnerPublicKey: currentPartnerKey.publicKey,
+          chatId,
+          epoch: 'epoch_1'
+        });
+        await saveConversationKey(chatId, 'epoch_1', newCek);
+        setConversationKey(newCek);
+
+        // Compute and set updated Safety Number
+        const sNumber = await computeSafetyNumber(currentIdKey.publicKeyJwk, currentPartnerKey.publicKeyJwk);
+        setSafetyNumber(sNumber);
+
+        setCryptoState('ready');
+      } else if (currentIdKey) {
+        await resolvePartnerAndDerive(currentIdKey, targetId, chatId);
+      }
+    } catch (err) {
+      console.error('Failed to accept new partner key:', err);
     }
   };
 
