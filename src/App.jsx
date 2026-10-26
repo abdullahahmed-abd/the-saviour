@@ -18,6 +18,7 @@ import E2EESetupModal from './components/crypto/E2EESetupModal';
 import E2EEUnlockModal from './components/crypto/E2EEUnlockModal';
 import SafetyNumberModal from './components/crypto/SafetyNumberModal';
 import KeyMismatchBanner from './components/crypto/KeyMismatchBanner';
+import ErrorBoundary from './components/common/ErrorBoundary';
 import { getLatestMoods } from './services/moods';
 import { Shield, WifiOff } from 'lucide-react';
 
@@ -77,6 +78,43 @@ function AppContent() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  // Mobile virtual keyboard detection for seamless chat viewport adjustment
+  useEffect(() => {
+    const handleViewportChange = () => {
+      if (window.visualViewport) {
+        const isKeyboardOpen = window.visualViewport.height < window.innerHeight - 100;
+        document.body.classList.toggle('keyboard-visible', isKeyboardOpen);
+      }
+    };
+
+    const handleFocusIn = (e) => {
+      if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') {
+        document.body.classList.add('keyboard-visible');
+      }
+    };
+
+    const handleFocusOut = (e) => {
+      if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') {
+        setTimeout(() => {
+          if (!document.activeElement || (document.activeElement.tagName !== 'TEXTAREA' && document.activeElement.tagName !== 'INPUT')) {
+            document.body.classList.remove('keyboard-visible');
+          }
+        }, 100);
+      }
+    };
+
+    window.visualViewport?.addEventListener('resize', handleViewportChange);
+    window.addEventListener('focusin', handleFocusIn);
+    window.addEventListener('focusout', handleFocusOut);
+
+    return () => {
+      window.visualViewport?.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('focusin', handleFocusIn);
+      window.removeEventListener('focusout', handleFocusOut);
+      document.body.classList.remove('keyboard-visible');
+    };
+  }, []);
 
   // Load partner's latest mood
   useEffect(() => {
@@ -176,24 +214,26 @@ function AppContent() {
         />
 
         {/* Main View Port */}
-        <main className="main-content">
-          {activeTab === 'chat' && (
-            <Chat
-              isSearching={isSearching}
-              onToggleSearch={() => setIsSearching(false)}
-            />
-          )}
-          {activeTab === 'fun' && <Fun />}
-          {activeTab === 'statistics' && <Statistics />}
-          {activeTab === 'memories' && <Memories />}
-          {activeTab === 'settings' && (
-            <Settings
-              theme={theme}
-              onToggleTheme={handleToggleTheme}
-              installPrompt={Boolean(installPrompt)}
-              onInstall={handleInstallApp}
-            />
-          )}
+        <main className={`main-content ${activeTab === 'chat' ? 'chat-mode' : ''}`}>
+          <ErrorBoundary>
+            {activeTab === 'chat' && (
+              <Chat
+                isSearching={isSearching}
+                onToggleSearch={() => setIsSearching(false)}
+              />
+            )}
+            {activeTab === 'fun' && <Fun />}
+            {activeTab === 'statistics' && <Statistics />}
+            {activeTab === 'memories' && <Memories />}
+            {activeTab === 'settings' && (
+              <Settings
+                theme={theme}
+                onToggleTheme={handleToggleTheme}
+                installPrompt={Boolean(installPrompt)}
+                onInstall={handleInstallApp}
+              />
+            )}
+          </ErrorBoundary>
         </main>
 
         {/* Bottom Navigation */}

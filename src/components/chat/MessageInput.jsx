@@ -139,20 +139,23 @@ export default function MessageInput({
             borderRadius: 'var(--radius-md)',
             padding: '8px 12px',
             borderLeft: '4px solid var(--accent-primary)',
-            fontSize: '12px'
+            fontSize: '12px',
+            width: '100%',
+            maxWidth: '100%',
+            boxSizing: 'border-box'
           }}
         >
-          <div>
+          <div style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
             <div style={{ color: 'var(--accent-primary)', fontWeight: 600 }}>
               Replying to {replyTo.sender_name}
             </div>
-            <div style={{ color: 'var(--text-secondary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '300px' }}>
+            <div style={{ color: 'var(--text-secondary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
               {replyTo.content}
             </div>
           </div>
           <button
             onClick={onCancelReply}
-            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', flexShrink: 0, padding: '4px' }}
           >
             <X size={16} />
           </button>
@@ -205,27 +208,31 @@ export default function MessageInput({
             background: cryptoState === 'waiting_for_partner' ? 'rgba(56, 189, 248, 0.12)' : 'rgba(239, 68, 68, 0.12)',
             border: cryptoState === 'waiting_for_partner' ? '1px solid rgba(56, 189, 248, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
             borderRadius: 'var(--radius-md)',
-            padding: '8px 12px',
-            fontSize: '12px',
-            color: cryptoState === 'waiting_for_partner' ? '#38bdf8' : '#f87171'
+            padding: '7px 11px',
+            fontSize: '11.5px',
+            color: cryptoState === 'waiting_for_partner' ? '#38bdf8' : '#f87171',
+            width: '100%',
+            maxWidth: '100%',
+            boxSizing: 'border-box',
+            overflow: 'hidden'
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <Lock size={14} />
-            <span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1, overflow: 'hidden' }}>
+            <Lock size={13} style={{ flexShrink: 0 }} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
               {cryptoState === 'locked'
-                ? 'Encryption vault locked — tap here to unlock'
+                ? 'Encryption vault locked — tap to unlock'
                 : cryptoState === 'missing_local_key'
-                ? 'Encryption key missing on this device — tap here to reset'
+                ? 'Encryption key missing — tap to reset'
                 : cryptoState === 'key_mismatch'
-                ? 'Partner encryption key changed — verify safety number'
+                ? 'Partner key changed — verify safety number'
                 : cryptoState === 'waiting_for_partner'
-                ? 'Waiting for partner to connect — messages will encrypt automatically'
+                ? 'Waiting for partner to connect...'
                 : 'Initializing end-to-end encryption...'}
             </span>
           </div>
           {(cryptoState === 'locked' || cryptoState === 'missing_local_key') && (
-            <span style={{ textDecoration: 'underline', fontWeight: 600, fontSize: '11px' }}>
+            <span style={{ textDecoration: 'underline', fontWeight: 600, fontSize: '11px', flexShrink: 0, marginLeft: '6px' }}>
               {cryptoState === 'locked' ? 'Unlock' : 'Reset Key'}
             </span>
           )}
@@ -233,9 +240,9 @@ export default function MessageInput({
       )}
 
       {/* Main input controls bar */}
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', width: '100%' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: '6px', width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
         {/* Attachment menu items */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
           {/* Hidden file input */}
           <input
             type="file"
@@ -258,14 +265,20 @@ export default function MessageInput({
             title={!isKeyReady ? 'Unlock encryption to send photos' : 'Send Photo'}
             className="btn-ghost"
             style={{
-              padding: '8px',
+              width: '32px',
+              height: '32px',
+              padding: '5px',
               borderRadius: '50%',
               border: 'none',
               cursor: 'pointer',
-              color: 'var(--text-muted)'
+              color: 'var(--text-muted)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
             }}
           >
-            <Image size={20} />
+            <Image size={18} />
           </button>
 
           {/* Virtual Gift button */}
@@ -281,14 +294,20 @@ export default function MessageInput({
             title={!isKeyReady ? 'Unlock encryption to send gifts' : 'Send Virtual Gift'}
             className="btn-ghost"
             style={{
-              padding: '8px',
+              width: '32px',
+              height: '32px',
+              padding: '5px',
               borderRadius: '50%',
               border: 'none',
               cursor: 'pointer',
-              color: 'var(--accent-warm)'
+              color: 'var(--accent-warm)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
             }}
           >
-            <Gift size={20} />
+            <Gift size={18} />
           </button>
 
           {/* Stickers button */}
@@ -304,14 +323,20 @@ export default function MessageInput({
             title={!isKeyReady ? 'Unlock encryption to send expressions' : 'Stickers & Expressions'}
             className="btn-ghost"
             style={{
-              padding: '8px',
+              width: '32px',
+              height: '32px',
+              padding: '5px',
               borderRadius: '50%',
               border: 'none',
               cursor: 'pointer',
-              color: 'var(--accent-cyan)'
+              color: 'var(--accent-cyan)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
             }}
           >
-            <Sparkles size={20} />
+            <Sparkles size={18} />
           </button>
         </div>
 
@@ -319,13 +344,16 @@ export default function MessageInput({
         <div
           style={{
             flex: 1,
+            minWidth: 0,
+            maxWidth: '100%',
             position: 'relative',
             display: 'flex',
             alignItems: 'center',
             background: 'var(--bg-input)',
             borderRadius: '20px',
             border: '1px solid var(--border-subtle)',
-            padding: '4px 12px'
+            padding: '4px 10px',
+            boxSizing: 'border-box'
           }}
         >
           <textarea
@@ -340,16 +368,18 @@ export default function MessageInput({
             placeholder={
               !isKeyReady
                 ? (cryptoState === 'locked'
-                  ? '🔒 Vault is locked — click to unlock...'
+                  ? '🔒 Vault locked...'
                   : cryptoState === 'missing_local_key'
-                  ? '🔒 Encryption key missing — click to reset...'
+                  ? '🔒 Key missing...'
                   : cryptoState === 'waiting_for_partner'
-                  ? '🔒 Waiting for partner to connect...'
-                  : '🔒 Initializing encryption...')
+                  ? '🔒 Waiting for partner...'
+                  : '🔒 Initializing...')
                 : 'Whisper something sweet...'
             }
             style={{
               flex: 1,
+              minWidth: 0,
+              width: '100%',
               background: 'transparent',
               border: 'none',
               outline: 'none',
@@ -359,7 +389,8 @@ export default function MessageInput({
               lineHeight: 1.4,
               resize: 'none',
               maxHeight: '120px',
-              padding: '6px 0'
+              padding: '6px 0',
+              boxSizing: 'border-box'
             }}
           />
 
@@ -372,7 +403,11 @@ export default function MessageInput({
               border: 'none',
               color: showEmojiPicker ? 'var(--accent-primary)' : 'var(--text-muted)',
               cursor: 'pointer',
-              padding: '4px'
+              padding: '4px',
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
             }}
           >
             <Smile size={19} />
@@ -387,18 +422,22 @@ export default function MessageInput({
           className="btn btn-primary"
           title={!isKeyReady ? 'Encryption is locked or unready' : 'Send encrypted message'}
           style={{
-            width: '42px',
-            height: '42px',
+            width: '40px',
+            height: '40px',
+            minWidth: '40px',
             padding: 0,
             borderRadius: '50%',
             opacity: (!isKeyReady || text.trim()) ? 1 : 0.4,
             cursor: (!isKeyReady || text.trim()) ? 'pointer' : 'default',
             flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
             backgroundColor: !isKeyReady ? 'rgba(239, 68, 68, 0.2)' : undefined,
             color: !isKeyReady ? '#f87171' : undefined
           }}
         >
-          {!isKeyReady ? <Lock size={17} /> : <Send size={18} />}
+          {!isKeyReady ? <Lock size={16} /> : <Send size={17} />}
         </button>
       </div>
     </div>

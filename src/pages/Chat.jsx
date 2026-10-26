@@ -36,24 +36,72 @@ export default function Chat({ isSearching, onToggleSearch }) {
   const scrollRef = useRef(null);
   const bottomAnchorRef = useRef(null);
   const isAtBottomRef = useRef(true);
+  const prevLastMsgIdRef = useRef(null);
+  const isInitialScrollDoneRef = useRef(false);
+  const isPaginatingRef = useRef(false);
 
-  // Auto scroll to bottom on new message or when partner begins typing
+  // 1. Initial jump to bottom on open: Instant (no smooth animation fighting user touch)
   useEffect(() => {
-    if (isAtBottomRef.current && bottomAnchorRef.current) {
-      bottomAnchorRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (!loadingMessages && messages.length > 0 && !isInitialScrollDoneRef.current) {
+      if (bottomAnchorRef.current) {
+        bottomAnchorRef.current.scrollIntoView({ behavior: 'auto' });
+      }
+      isInitialScrollDoneRef.current = true;
+      prevLastMsgIdRef.current = messages[messages.length - 1]?.id;
+      markChatRead();
     }
-    markChatRead();
-  }, [messages.length, partnerTyping, markChatRead]);
+  }, [loadingMessages, messages.length, markChatRead]);
 
+  // 2. New message arriving at bottom: Auto-scroll only if sent by user OR user was already at bottom
+  useEffect(() => {
+    if (!isInitialScrollDoneRef.current || messages.length === 0) return;
+
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg && lastMsg.id !== prevLastMsgIdRef.current) {
+      prevLastMsgIdRef.current = lastMsg.id;
+      const isSentByMe = lastMsg.sender_id === user?.id;
+
+      if (isSentByMe || isAtBottomRef.current) {
+        requestAnimationFrame(() => {
+          bottomAnchorRef.current?.scrollIntoView({ behavior: 'smooth' });
+        });
+      }
+      markChatRead();
+    }
+  }, [messages, user?.id, markChatRead]);
+
+  // 3. Partner typing: only gently scroll into view if user is already watching at the bottom
+  useEffect(() => {
+    if (partnerTyping && isAtBottomRef.current) {
+      requestAnimationFrame(() => {
+        bottomAnchorRef.current?.scrollIntoView({ behavior: 'smooth' });
+      });
+    }
+  }, [partnerTyping]);
+
+  // 4. Smooth scrolling & pagination handler with scroll position preservation
   const handleScroll = (e) => {
     const target = e.target;
-    // Check if near top to trigger load older messages
-    if (target.scrollTop < 50 && hasMoreMessages && !loadingMessages) {
-      loadMoreMessages();
-    }
-    // Check if user is near bottom
+    // Calculate if user is near bottom (within 70px)
     const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
-    isAtBottomRef.current = distanceToBottom < 100;
+    isAtBottomRef.current = distanceToBottom < 70;
+
+    // Trigger load older messages when near top
+    if (target.scrollTop < 60 && hasMoreMessages && !loadingMessages && !isPaginatingRef.current) {
+      isPaginatingRef.current = true;
+      const prevScrollHeight = target.scrollHeight;
+      const prevScrollTop = target.scrollTop;
+
+      loadMoreMessages().finally(() => {
+        requestAnimationFrame(() => {
+          if (scrollRef.current) {
+            const newScrollHeight = scrollRef.current.scrollHeight;
+            scrollRef.current.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+          }
+          isPaginatingRef.current = false;
+        });
+      });
+    }
   };
 
   // Partner's last read message ID

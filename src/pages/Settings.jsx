@@ -12,6 +12,7 @@ import {
   ShieldAlert,
   Key,
   KeyRound,
+  Lock,
   FileDown,
   LogOut,
   Save,

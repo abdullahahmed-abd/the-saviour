@@ -827,6 +827,19 @@ export function ChatProvider({ children }) {
     }
   };
 
+  const lastMarkedMsgIdRef = useRef(null);
+  const handleMarkChatRead = useCallback(async () => {
+    if (!chatId || !user || messages.length === 0) return;
+    const lastMsg = messages[messages.length - 1];
+    if (!lastMsg || lastMsg.id === lastMarkedMsgIdRef.current) return;
+    lastMarkedMsgIdRef.current = lastMsg.id;
+    try {
+      await markChatRead(chatId, user.id, lastMsg.id);
+    } catch (e) {
+      console.warn('Silent error marking chat read:', e);
+    }
+  }, [chatId, user?.id, messages]);
+
   const value = {
     messages,
     reactions,
@@ -845,11 +858,7 @@ export function ChatProvider({ children }) {
     deleteMsg,
     toggleReaction,
     broadcastTyping,
-    markChatRead: () => {
-      if (messages.length > 0 && user) {
-        markChatRead(chatId, user.id, messages[messages.length - 1].id);
-      }
-    }
+    markChatRead: handleMarkChatRead
   };
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
